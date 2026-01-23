@@ -1,0 +1,56 @@
+﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
+
+#pragma once
+
+#include "/Engine/Public/Platform.ush"
+#include "TCAT_InfluenceCommon.ush"
+
+RWTexture2D<float> OutInfluenceMap;
+
+[numthreads(8, 8, 1)]
+void main(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    // One Thread = One Cell
+    if (DispatchThreadId.x >= MapSize.x || DispatchThreadId.y >= MapSize.y) return;
+    
+    // Calculate PixelIndex To World
+    float2 CellOffset = float2(DispatchThreadId.xy) * GridSize + (GridSize * 0.5f);
+    float2 WorldXY = MapStartPos.xy + CellOffset;
+
+    float2 SelfUV = TCAT_WorldToGlobalUV(WorldXY);
+    float MyHeight = GlobalHeightMap.SampleLevel(GlobalHeightMapSampler, SelfUV, 0).r;
+    float3 MyWorldPos = float3(WorldXY, MyHeight);
+
+    uint AtlasWidth, AtlasHeight;
+    CurveAtlasTexture.GetDimensions(AtlasWidth, AtlasHeight);
+    
+    float TotalInfluence = 0.0f;
+    
+    for (uint i = 0; i < SourceCount; ++i)
+    {
+        FTCAT_InfluenceSource Src = InSources[i];
+        
+        // if source is far from this cell, then skip
+        if (distance(MyWorldPos, Src.WorldLocation) > Src.InfluenceRadius) continue;
+
+        // Influence Z height Limit
+        if ((ProjectionFlags & TCAT_PROJECTION_VERTICAL_RANGE) != 0 && Src.InfluenceHalfHeight > 0.0001f)
+        {            
+            if (abs(MyWorldPos.z - Src.WorldLocation.z)> Src.InfluenceHalfHeight ) 
+                continue; 
+        }
+        
+        // LoS Check
+        float Visibility = 1.0; 
+        if ((ProjectionFlags & TCAT_PROJECTION_LINE_OF_SIGHT) != 0) 
+        {
+            Visibility = TCAT_CheckVisibility(Src.WorldLocation, MyWorldPos, Src.EyeHeightOffset);
+        }
+
+        if (Visibility <= 0.0f) continue;
+
+        TotalInfluence +=  TCAT_CalculateInfluence(MyWorldPos,Src, CurveAtlasTexture, CurveAtlasSampler,(float)AtlasHeight);
+    }
+    
+    OutInfluenceMap[DispatchThreadId.xy] = TotalInfluence;
+}

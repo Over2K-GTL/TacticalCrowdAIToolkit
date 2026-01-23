@@ -1,0 +1,107 @@
+﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
+
+#pragma once
+
+// Should Match with TCAT\Source\TCATTypes.h's FTCATInfluenceSource
+struct FTCAT_InfluenceSource
+{
+    float3 WorldLocation;
+    float InfluenceRadius;
+    float Strength; // Importance of the source (Positive for allies, Negative for enemies)
+    int CurveTypeIndex; // ID of curve types in the LUT (Curve Data)
+    float InfluenceHalfHeight;
+    float EyeHeightOffset;
+};
+
+// Should Match with TCAT\Source\TCATInfluenceCS.h's Resources && Check FTCATInfluenceDispatchParams
+// [Global Config]
+uint SourceCount;    // Total number of active influence sources
+uint ProjectionFlags; // Projection Setting (Using Height Map)
+float RayMarchStepSize;
+uint RayMarchMaxSteps;
+
+// [Source Data]
+StructuredBuffer<FTCAT_InfluenceSource> InSources;
+
+// [Environment : Height Map]
+float3 GlobalHeightMapOrigin;
+float2 GlobalHeightMapSize;
+Texture2D<float> GlobalHeightMap;
+SamplerState GlobalHeightMapSampler;
+
+// [Environment : Curve Atlas]
+Texture2D<float> CurveAtlasTexture;
+SamplerState CurveAtlasSampler;
+
+// [Influence Map]
+float3 MapStartPos;  // Starting world position of the influence map
+float GridSize;      // World size of a single grid cell
+uint2 MapSize;
+
+// =========================================================
+// Helper Functions
+// =========================================================
+
+float2 TCAT_WorldToGlobalUV(float2 WorldPos)
+{
+    return (WorldPos - GlobalHeightMapOrigin.xy) / GlobalHeightMapSize;
+}
+
+float TCAT_CalculateInfluence(float3 CellWorldPos, FTCAT_InfluenceSource Source, Texture2D<float> InAtlasTexture, SamplerState InAtlasSampler, float AtlasHeight)
+{
+    float Distance = length(CellWorldPos - Source.WorldLocation);
+
+    float U = saturate(Distance / max(Source.InfluenceRadius, 0.0001f));
+    float V = (float(Source.CurveTypeIndex) + 0.5f) / AtlasHeight;
+    
+    float CurveValue = InAtlasTexture.SampleLevel(InAtlasSampler, float2(U, V), 0);
+    
+    return CurveValue * Source.Strength;
+};
+
+
+float TCAT_CheckVisibility(float3 SourceBasePos, float3 TargetBasePos, float HeightOffset)
+{
+    float3 StartEyePos = SourceBasePos;
+    StartEyePos.z += HeightOffset;
+
+    float3 TargetPoint = TargetBasePos;
+    TargetPoint.z += 10.0f; // Prevent Z-Fighting
+
+    float3 Diff = TargetPoint - StartEyePos;
+    float Dist = length(Diff);
+
+    if (Dist < 0.001f) return 1.0f; // Assume they are in Same Cell
+    
+    float3 Dir = Diff / Dist;
+
+    // Adaptive Optimization
+    float BaseStepSize = RayMarchStepSize; // Raymarching unit
+    float NeededSteps = ceil(Dist / BaseStepSize);
+
+    int ActualSteps = min((int)NeededSteps, (int)RayMarchMaxSteps);
+    if (ActualSteps < 1) return 1.0f;
+    float ActualStepSize = Dist / float(ActualSteps);
+    
+    float3 CurrentRayPos = StartEyePos;
+    
+    // Shooting Ray : To TargetBasePos
+    // skip first step (self)
+    for(int i = 1; i < ActualSteps; ++i)
+    {
+        CurrentRayPos += Dir * ActualStepSize;
+        
+        float2 UV = TCAT_WorldToGlobalUV(CurrentRayPos.xy);
+        if (any(UV < 0.0f) || any(UV > 1.0f)) continue;
+        
+        float TerrainHeight = GlobalHeightMap.SampleLevel(GlobalHeightMapSampler, UV, 0).r;
+
+        // Line of Sight Check (Ray must be above terrain)
+        if (TerrainHeight > CurrentRayPos.z)
+        {
+            return 0.0f; // Blocked by wall/terrain
+        }
+    }
+
+    return 1.0f;
+};

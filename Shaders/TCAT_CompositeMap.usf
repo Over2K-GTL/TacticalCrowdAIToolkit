@@ -1,0 +1,114 @@
+// Copyright 2025-2026 Over2K. All Rights Reserved.
+
+#pragma once
+#include "/Engine/Public/Platform.ush"
+
+// Input/Output textures
+Texture2D<float> InputMapA;
+Texture2D<float> InputMapB;
+Texture2D<float2> NormalizeMinMaxTexture;  // 1x1 texture containing min/max for Normalize
+RWTexture2D<float> OutputMap;
+
+// Operation parameters
+uint2 MapSize;
+uint OperationType;  // Maps to ETCATCompositeOp enum
+float StrengthParam;
+uint bClampInput;     // For binary ops: clamp InputB before normalize and strength
+float ClampMin;        // Min clamp value for InputB
+float ClampMax;        // Max clamp value for InputB
+uint bNormalizeInput; // For binary ops: normalize InputB after clamp, before strength
+
+// Resampling parameters
+float2 InputAUVScale;
+float2 InputAUVOffset;
+float2 InputBUVScale;
+float2 InputBUVOffset;
+
+SamplerState PointSampler;
+
+// Operation implementations
+float OpAdd(float a, float b) { return a + b; }
+float OpSubtract(float a, float b) { return a - b; }
+float OpMultiply(float a, float b) { return a * b; }
+float OpNormalize(float a, float minVal, float maxVal)
+{
+    float range = maxVal - minVal;
+    return (range > 0.0001) ? ((a - minVal) / range) : 0.0;
+}
+float OpDivide(float a, float b) { return (abs(b) > 0.0001) ? (a / b) : 0.0; }
+float OpInvert(float a, float strength) { return (1.0 - a) * strength; }
+
+[numthreads(8, 8, 1)]
+void ComposeInfluenceMaps(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    if (DispatchThreadId.x >= MapSize.x || DispatchThreadId.y >= MapSize.y) return;
+
+    // Calculate UV coordinates for this output pixel
+    float2 OutputUV = (float2(DispatchThreadId.xy) + 0.5) / float2(MapSize);
+
+    // Resample input maps at corresponding locations
+    float2 InputAUV = OutputUV * InputAUVScale + InputAUVOffset;
+    float2 InputBUV = OutputUV * InputBUVScale + InputBUVOffset;
+
+    float ValueA = InputMapA.SampleLevel(PointSampler, InputAUV, 0).r;
+    float ValueB = InputMapB.SampleLevel(PointSampler, InputBUV, 0).r;
+
+    float Result = 0.0;
+
+    switch (OperationType)
+    {
+        // Binary operations (0-3): Add, Subtract, Multiply, Divide
+        // Operation order: Clamp -> Normalize -> Strength
+        case 0:
+        case 1:
+        case 2:
+        case 3:
+        {
+            float EffectiveValueB = ValueB;
+
+            // Step 1: Optionally clamp InputMapB
+            if (bClampInput != 0)
+            {
+                EffectiveValueB = clamp(EffectiveValueB, ClampMin, ClampMax);
+            }
+
+            // Step 2: Optionally normalize InputMapB (temporary: divide by 5.0)
+            if (bNormalizeInput != 0)
+            {
+                float2 MinMax = NormalizeMinMaxTexture.SampleLevel(PointSampler, float2(0.5, 0.5), 0);
+                EffectiveValueB = OpNormalize(EffectiveValueB, MinMax.r, MinMax.g);
+            }
+
+            // Step 3: Apply strength multiplier
+            EffectiveValueB *= StrengthParam;
+
+            // Perform operation
+            switch (OperationType)
+            {
+                case 0: Result = OpAdd(ValueA, EffectiveValueB); break;
+                case 1: Result = OpSubtract(ValueA, EffectiveValueB); break;
+                case 2: Result = OpMultiply(ValueA, EffectiveValueB); break;
+                case 3: Result = OpDivide(ValueA, EffectiveValueB); break;
+            }
+            break;
+        }
+        
+        // Invert operation (4): Invert accumulator
+        case 4:
+            Result = OpInvert(ValueA, StrengthParam);
+            break;
+
+        // Normalize operation (5): Normalize accumulator to [0,1] then apply strength
+        case 5:
+        {
+            // NormalizeMinMaxTexture contains min/max of the ACCUMULATOR (InputMapA)
+            float2 MinMax = NormalizeMinMaxTexture.SampleLevel(PointSampler, float2(0.5, 0.5), 0);
+            float range = MinMax.g - MinMax.r;
+            float normalized = (range > 0.0001) ? ((ValueA - MinMax.r) / range) : 0.0;
+            Result = normalized * StrengthParam;
+            break;
+        }
+    }
+
+    OutputMap[DispatchThreadId.xy] = Result;
+}

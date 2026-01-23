@@ -1,0 +1,122 @@
+// Copyright 2025-2026 Over2K. All Rights Reserved.
+
+#include "/Engine/Public/Platform.ush"
+
+// Stage 1 resources
+Texture2D<float> InputTexture;
+RWStructuredBuffer<float2> IntermediateMinMaxBuffer;  // Stage 1 output: [min, max] per tile
+uint2 TextureSize;
+
+// Stage 2 resources
+StructuredBuffer<float2> IntermediateMinMaxBufferSRV; // Stage 2 input: read-only view of intermediate results
+RWStructuredBuffer<float2> OutputBuffer;              // Stage 2 iterative output buffer
+RWTexture2D<float2> OutputMinMaxTexture;              // Final 1x1 texture: [min, max]
+uint IntermediateBufferSize;
+uint InputOffset;       // Where to start reading in IntermediateMinMaxBufferSRV
+uint OutputOffset;      // Where to write results in OutputBuffer
+uint bWriteToTexture;   // If true, write final result to texture instead of buffer
+
+groupshared float SharedMin[256];  // 16x16 = 256 threads per group
+groupshared float SharedMax[256];  // 16x16 = 256 threads per group
+
+// ============================================================================
+// Stage 1: Reduce texture tiles to intermediate buffer
+// ============================================================================
+[numthreads(16, 16, 1)]
+void FindMaxStage1(uint3 GroupID : SV_GroupID, uint3 GroupThreadID : SV_GroupThreadID, uint GroupIndex : SV_GroupIndex)
+{
+    uint2 PixelCoord = GroupID.xy * uint2(16, 16) + GroupThreadID.xy;
+
+    // Load value from texture (initialize to extremes for out-of-bounds threads)
+    float Value = 0.0;
+    bool bIsValid = (PixelCoord.x < TextureSize.x && PixelCoord.y < TextureSize.y);
+
+    if (bIsValid)
+    {
+        Value = InputTexture[PixelCoord].r;
+    }
+
+    // Initialize shared memory with valid values or extremes
+    // Out-of-bounds threads use extremes so they don't affect the result
+    SharedMin[GroupIndex] = bIsValid ? Value : 3.402823466e+38F;  // FLT_MAX
+    SharedMax[GroupIndex] = bIsValid ? Value : -3.402823466e+38F; // -FLT_MAX
+    GroupMemoryBarrierWithGroupSync();
+
+    // Parallel reduction within thread group (256 -> 1)
+    [unroll]
+    for (uint stride = 128; stride > 0; stride >>= 1)
+    {
+        if (GroupIndex < stride)
+        {
+            SharedMin[GroupIndex] = min(SharedMin[GroupIndex], SharedMin[GroupIndex + stride]);
+            SharedMax[GroupIndex] = max(SharedMax[GroupIndex], SharedMax[GroupIndex + stride]);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    // Thread 0 writes tile min/max to intermediate buffer
+    if (GroupIndex == 0)
+    {
+        uint TileIndex = GroupID.y * ((TextureSize.x + 15) / 16) + GroupID.x;
+        IntermediateMinMaxBuffer[TileIndex] = float2(SharedMin[0], SharedMax[0]);
+    }
+}
+
+// ============================================================================
+// Stage 2: Reduce intermediate buffer to final min/max
+// Supports multi-group dispatch for iterative reduction of large datasets.
+// When IntermediateBufferSize > 256, multiple groups are dispatched and results
+// are written to OutputBuffer. When bWriteToTexture is true (final pass),
+// the result is written to the 1x1 OutputMinMaxTexture.
+// ============================================================================
+[numthreads(256, 1, 1)]
+void FindMaxStage2(uint3 GroupID : SV_GroupID, uint GroupIndex : SV_GroupIndex)
+{
+    // Calculate global index across all groups
+    uint GlobalIndex = GroupID.x * 256 + GroupIndex;
+
+    // Load from intermediate buffer with bounds check
+    bool bIsValid = (GlobalIndex < IntermediateBufferSize);
+    float2 MinMax = bIsValid ? IntermediateMinMaxBufferSRV[InputOffset + GlobalIndex] : float2(3.402823466e+38F, -3.402823466e+38F);
+
+    SharedMin[GroupIndex] = MinMax.x;
+    SharedMax[GroupIndex] = MinMax.y;
+    GroupMemoryBarrierWithGroupSync();
+
+    // Parallel reduction within thread group (256 -> 1)
+    [unroll]
+    for (uint stride = 128; stride > 0; stride >>= 1)
+    {
+        if (GroupIndex < stride)
+        {
+            SharedMin[GroupIndex] = min(SharedMin[GroupIndex], SharedMin[GroupIndex + stride]);
+            SharedMax[GroupIndex] = max(SharedMax[GroupIndex], SharedMax[GroupIndex + stride]);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    // Thread 0 of each group writes result
+    if (GroupIndex == 0)
+    {
+        float FinalMin = SharedMin[0];
+        float FinalMax = SharedMax[0];
+
+        // Ensure max >= min + epsilon to prevent division by zero during normalization
+        float Range = FinalMax - FinalMin;
+        if (Range < 0.0001)
+        {
+            FinalMax = FinalMin + 0.0001;
+        }
+
+        if (bWriteToTexture != 0)
+        {
+            // Final pass: write to output texture
+            OutputMinMaxTexture[uint2(0, 0)] = float2(FinalMin, FinalMax);
+        }
+        else
+        {
+            // Intermediate pass: write to buffer for next iteration
+            OutputBuffer[OutputOffset + GroupID.x] = float2(FinalMin, FinalMax);
+        }
+    }
+}
