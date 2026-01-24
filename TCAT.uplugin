@@ -8,9 +8,10 @@
 	"CreatedBy": "Over2K",
 	"CreatedByURL": "",
 	"DocsURL": "",
+	"FabURL": "com.epicgames.launcher://ue/Fab/product//0836f710-ae9b-413d-85ba-ee23b6b4c917",
 	"MarketplaceURL": "com.epicgames.launcher://ue/Fab/product//0836f710-ae9b-413d-85ba-ee23b6b4c917",
 	"SupportURL": "",
-	"EngineVersion": "5.6.0",
+	"EngineVersion": "5.7.0",
 	"CanContainContent": true,
 	"Installed": true,
 	"Modules": [

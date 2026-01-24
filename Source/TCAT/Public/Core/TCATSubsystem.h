@@ -223,7 +223,7 @@ private:
 	// Constants
 	const int32 ATLAS_TEXTURE_WIDTH = 256;
 	const int32 MAX_ATLAS_HEIGHT = 256; // For now
-	const FString CURVE_SEARCH_PATH = TEXT("/TCAT/Curves");
+	const FString CURVE_SEARCH_PATH = TEXT("/TCAT/TCAT/Curves");
 	
 // =======================================================================	
 // Private - Query Processing
