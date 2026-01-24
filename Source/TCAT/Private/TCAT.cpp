@@ -2,6 +2,7 @@
 
 
 #include "TCAT.h"
+#include "ShaderCore.h"
 #include "Interfaces/IPluginManager.h"
 #include "Styling/SlateStyleRegistry.h"
 

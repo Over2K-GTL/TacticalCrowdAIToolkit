@@ -127,6 +127,9 @@ struct FTCATBatchQuery
 	bool bExcludeUnreachableLocation = false;
 	bool bTraceVisibility = false;
 
+    /** Adds a deterministic jitter to break ties between identical values. */
+    bool bUseRandomizedTiebreaker = true;
+
 	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None;
 	float DistanceBiasWeight = 0.0f;
 	

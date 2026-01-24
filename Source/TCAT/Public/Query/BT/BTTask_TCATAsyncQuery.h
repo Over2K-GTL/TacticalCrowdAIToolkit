@@ -134,6 +134,10 @@ protected:
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
     bool bIgnoreZValue = false;
 
+    /** If true, applies a deterministic jitter so equal scores stay unique. */
+    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
+    bool bUseRandomizedTiebreaker = true;
+
     /**
      * Applies a distance-based bias to the score.
      * - Standard: Linear falloff. Prefer closer targets.

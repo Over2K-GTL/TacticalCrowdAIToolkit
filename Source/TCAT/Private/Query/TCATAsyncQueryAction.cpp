@@ -48,7 +48,7 @@ bool UTCATAsyncSearchAction::TryResolveQueryCenter(FVector& OutCenter) const
 }
 
 UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchHighestValue(UObject* WorldContextObject, FName MapTag,
-UTCATInfluenceComponent* SourceComponent, float SearchRadius, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue,
+UTCATInfluenceComponent* SourceComponent, float SearchRadius, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker,
   ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride, bool bUseWorldPosOverride,const FVector& WorldPosToQueryOverride)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
@@ -67,6 +67,7 @@ UTCATInfluenceComponent* SourceComponent, float SearchRadius, bool bSubtractSelf
 	Action->HalfHeightOverride = HalfHeightOverride;
 	Action->WorldPosOverride = WorldPosToQueryOverride;
 	Action->bUseWorldPosOverride = bUseWorldPosOverride;
+	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
 
 	Action->SelectedQueryType = ETCATQueryType::HighestValue;
 
@@ -74,7 +75,7 @@ UTCATInfluenceComponent* SourceComponent, float SearchRadius, bool bSubtractSelf
 }
 
 UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchLowestValue(UObject* WorldContextObject, FName MapTag,
-UTCATInfluenceComponent* SourceComponent, float SearchRadius, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue,
+UTCATInfluenceComponent* SourceComponent, float SearchRadius, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker,
   ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride, bool bUseWorldPosOverride,const FVector& WorldPosToQueryOverride)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
@@ -93,6 +94,8 @@ UTCATInfluenceComponent* SourceComponent, float SearchRadius, bool bSubtractSelf
 	Action->HalfHeightOverride = HalfHeightOverride;
 	Action->WorldPosOverride = WorldPosToQueryOverride;
 	Action->bUseWorldPosOverride = bUseWorldPosOverride;
+	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+
 
 	Action->SelectedQueryType = ETCATQueryType::LowestValue;
 
@@ -100,7 +103,7 @@ UTCATInfluenceComponent* SourceComponent, float SearchRadius, bool bSubtractSelf
 }
 
 UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchCondition(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent,
-float SearchRadius, float CompareValue, ETCATCompareType CompareType, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue,
+float SearchRadius, float CompareValue, ETCATCompareType CompareType, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker,
 ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride,  bool bUseWorldPosOverride,const FVector& WorldPosToQueryOverride)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
@@ -122,6 +125,8 @@ ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOv
 	Action->HalfHeightOverride = HalfHeightOverride;
 	Action->WorldPosOverride = WorldPosToQueryOverride;
 	Action->bUseWorldPosOverride = bUseWorldPosOverride;
+	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+
 	
 	Action->SelectedQueryType = ETCATQueryType::Condition;
 
@@ -129,7 +134,7 @@ ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOv
 }
 
 UTCATAsyncSearchAction* UTCATAsyncSearchAction::GetValueAtComponent(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent, bool bSubtractSelfInfluence,
-	bool bIgnoreZValue, float HalfHeightOverride,  bool bUseWorldPosOverride,const FVector& WorldPosToQueryOverride)
+	bool bIgnoreZValue, float HalfHeightOverride,  bool bUseWorldPosOverride,const FVector& WorldPosToQueryOverride, bool bUseRandomizedTiebreaker)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
     
@@ -141,13 +146,15 @@ UTCATAsyncSearchAction* UTCATAsyncSearchAction::GetValueAtComponent(UObject* Wor
 	Action->HalfHeightOverride = HalfHeightOverride;
 	Action->WorldPosOverride = WorldPosToQueryOverride;
 	Action->bUseWorldPosOverride = bUseWorldPosOverride;
+	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+
 	Action->SelectedQueryType = ETCATQueryType::ValueAtPos;
 
 	return Action;
 }
 
 UTCATAsyncSearchAction* UTCATAsyncSearchAction::GetInfluenceGradient(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent, 
-	float SearchRadius, float LookAheadDistance, bool bSubtractSelfInfluence, bool bIgnoreZValue, float HalfHeightOverride, bool bUseWorldPosOverride,const FVector& WorldPosToQueryOverride)
+	float SearchRadius, float LookAheadDistance, bool bSubtractSelfInfluence, bool bIgnoreZValue, float HalfHeightOverride, bool bUseWorldPosOverride,const FVector& WorldPosToQueryOverride, bool bUseRandomizedTiebreaker)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
     
@@ -163,6 +170,8 @@ UTCATAsyncSearchAction* UTCATAsyncSearchAction::GetInfluenceGradient(UObject* Wo
 	Action->HalfHeightOverride = HalfHeightOverride;
 	Action->WorldPosOverride = WorldPosToQueryOverride;
 	Action->bUseWorldPosOverride = bUseWorldPosOverride;
+	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+
 	Action->SelectedQueryType = ETCATQueryType::Gradient;
 
 	return Action;
@@ -170,7 +179,7 @@ UTCATAsyncSearchAction* UTCATAsyncSearchAction::GetInfluenceGradient(UObject* Wo
 
 UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchHighestInCondition(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent,
 float SearchRadius, float CompareValue, ETCATCompareType CompareType, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue,
-ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride,  bool bUseWorldPosOverride,const FVector& WorldPosToQueryOverride)
+ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride,  bool bUseWorldPosOverride,const FVector& WorldPosToQueryOverride, bool bUseRandomizedTiebreaker)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
     
@@ -191,6 +200,8 @@ ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOv
 	Action->HalfHeightOverride = HalfHeightOverride;
 	Action->WorldPosOverride = WorldPosToQueryOverride;
 	Action->bUseWorldPosOverride = bUseWorldPosOverride;
+	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+
 
 	Action->SelectedQueryType = ETCATQueryType::HighestValueInCondition;
 
@@ -198,7 +209,7 @@ ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOv
 }
 
 UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchLowestInCondition(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent,
-float SearchRadius, float CompareValue, ETCATCompareType CompareType, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue,
+float SearchRadius, float CompareValue, ETCATCompareType CompareType, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker,
 ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride,  bool bUseWorldPosOverride,const FVector& WorldPosToQueryOverride)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
@@ -220,6 +231,8 @@ ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOv
 	Action->HalfHeightOverride = HalfHeightOverride;
 	Action->WorldPosOverride = WorldPosToQueryOverride;
 	Action->bUseWorldPosOverride = bUseWorldPosOverride;
+	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+
 
 	Action->SelectedQueryType = ETCATQueryType::LowestValueInCondition;
 
@@ -305,6 +318,7 @@ void UTCATAsyncSearchAction::Activate()
 
 	Query.DistanceBiasType = DistanceBiasType;
 	Query.DistanceBiasWeight = DistanceBiasWeight;
+	Query.bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
 	
 	Query.MaxResults = 1;
     Query.RandomSeed = HashCombineFast(GetTypeHash(Query.MapTag), GetTypeHash(Query.Center));

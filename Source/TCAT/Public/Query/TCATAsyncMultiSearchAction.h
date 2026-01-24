@@ -42,6 +42,7 @@ public:
 	 * the result will be an **Approximation** and may contain slight precision errors.
      * @param bExcludeUnreachableLocation [Expensive] Validates NavMesh reachability.
      * @param bTraceVisibility  [Expensive] Validates Line of Sight.
+     * @param bUseRandomizedTiebreaker Prevents all AIs from rushing to the exact same spot when scores are tied.
      * @param bIgnoreZValue Projects result to height map.
 	 * @param DistanceBiasType  Determines how distance affects the scoring.
 	 * - None: Distance is ignored. Only the map value matters.
@@ -53,17 +54,17 @@ public:
 	 * Higher values make proximity more important than the influence map's raw value.
 	 * @param InfluenceHalfHeightOverride Optional Influence Half Height Override -1 uses the source component default, 0 disables the reachability filter.
      */
-    UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Highest Values (Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
+    UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Highest Values (Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker, DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
     static UTCATAsyncMultiSearchAction* SearchHighestValues(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent = nullptr,
-    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = true,
+    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false,
 	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f, bool bUseWorldPosOverride = false, const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
 
 	/**
 	 * Finds the Top-N lowest influence values within a specified radius.
 	 */
-	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Lowest Values (Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Lowest Values (Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker,DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
 	static UTCATAsyncMultiSearchAction* SearchLowestValues(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent = nullptr,
-	UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = true,
+	UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false,
 	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f, bool bUseWorldPosOverride = false, const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
 
 	/**
@@ -83,6 +84,7 @@ public:
 	 * @param bExcludeUnreachableLocation [Expensive] Validate NavMesh reachability.
 	 * @param bTraceVisibility  [Expensive] Validate Line of Sight.
 	 * @param bIgnoreZValue Project result to height map.
+	 * @param bUseRandomizedTiebreaker Prevents all AIs from rushing to the exact same spot when scores are tied.
 	 * @param DistanceBiasType  Determines how distance affects the scoring.
 	 * - None: Distance is ignored. Only the map value matters.
 	 * - Standard: Linear falloff (1.0 at center, 0.0 at radius).
@@ -94,9 +96,9 @@ public:
 	 * Higher values make proximity more important than the influence map's raw value.
 	 * (Only applied when DistanceBiasType is not None)
 	 */
-	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Highest Values In Condition(Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Highest Values In Condition(Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker,DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
     static UTCATAsyncMultiSearchAction* SearchHighestValuesInCondition(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent = nullptr,
-    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, float CompareValue = 0.0f, ETCATCompareType CompareType = ETCATCompareType::Greater, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = true,
+    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, float CompareValue = 0.0f, ETCATCompareType CompareType = ETCATCompareType::Greater, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false,
     ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f, bool bUseWorldPosOverride = false, const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
 
 	/**
@@ -116,6 +118,7 @@ public:
 	 * @param bExcludeUnreachableLocation [Expensive] Validate NavMesh reachability.
 	 * @param bTraceVisibility  [Expensive] Validate Line of Sight.
 	 * @param bIgnoreZValue If false, respects the terrain height map.
+	 * @param bUseRandomizedTiebreaker Prevents all AIs from rushing to the exact same spot when scores are tied.
 	 * @param DistanceBiasType  Determines how distance affects the scoring.
 	 * - None: Distance is ignored. Only the map value matters.
 	 * - Standard: Linear falloff (1.0 at center, 0.0 at radius).
@@ -127,9 +130,9 @@ public:
 	 * Higher values make proximity more important than the influence map's raw value.
 	 * (Only applied when DistanceBiasType is not None)
 	 */
-	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Lowest Values In Condition(Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Lowest Values In Condition(Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker,DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
     static UTCATAsyncMultiSearchAction* SearchLowestValuesInCondition(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent = nullptr,
-    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, float CompareValue = 0.0f, ETCATCompareType CompareType = ETCATCompareType::Greater,  int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = true,
+    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, float CompareValue = 0.0f, ETCATCompareType CompareType = ETCATCompareType::Greater,  int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false,
 	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f, bool bUseWorldPosOverride = false, const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
 
     virtual void Activate() override;
@@ -166,10 +169,14 @@ private:
     bool bTraceVisibility;
     bool bIgnoreZValue;
 
-	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None;
-	float DistanceBiasWeight = 0.0f;
+    /** Disables the tie-breaking jitter so identical scores stay identical. */
+    bool bUseRandomizedTiebreaker = true;
+
+    ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None;
+    float DistanceBiasWeight = 0.0f;
 
 	FVector WorldPosOverride = FVector::ZeroVector;
 	bool bUseWorldPosOverride = false;
 };
+
 

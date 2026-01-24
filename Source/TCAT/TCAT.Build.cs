@@ -9,6 +9,11 @@ public class TCAT : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 		
+		IWYUSupport = IWYUSupport.Full;
+		bLegacyPublicIncludePaths = false;
+		
+		bUseUnity = true;
+		
 		PublicIncludePaths.AddRange(
 			new string[] {
 				// ... add public include paths required here ...

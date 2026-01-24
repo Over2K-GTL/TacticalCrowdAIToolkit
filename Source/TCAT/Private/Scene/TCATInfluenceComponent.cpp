@@ -8,6 +8,7 @@
 #include "GameFramework/Actor.h"
 #include "Scene/TCATInfluenceVolume.h"
 #include "Core/TCATSettings.h"
+#include "Engine/World.h"
 #include "Query/TCATQueryTypes.h"
 #include "VisualLogger/VisualLogger.h"
 

@@ -136,11 +136,15 @@ protected:
     bool bTraceVisibility = false;
 
     /** 
-     * If true, snaps the Z-height to the TCAT baked height map for better accuracy. 
-     * Disable this if you want 2D-only logic.
+     * If true, if you want 2D-only logic 
+     * Disabled, snaps the Z-height to the TCAT baked height map for better accuracy.
      */
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
     bool bIgnoreZValue = false;
+
+    /** If true, applies a deterministic jitter so equal scores stay unique. */
+    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
+    bool bUseRandomizedTiebreaker = true;
 
     /**
      * Applies a distance-based bias to the score.
