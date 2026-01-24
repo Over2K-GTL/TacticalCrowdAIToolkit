@@ -136,7 +136,7 @@ TCAT/
 
 ## Installation Requirements
 ---
-- Unreal Engine 5.6 or later
+- Unreal Engine 5.6 / 5.7
 - Windows operating system
 
 
