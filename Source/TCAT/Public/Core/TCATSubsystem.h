@@ -14,6 +14,8 @@ enum class ETCATCompareType : uint8;
 class ATCATInfluenceVolume;
 class UTCATInfluenceComponent;
 class UCurveFloat;
+struct FTCATInfluenceDispatchParams;
+struct FTCATCompositeDispatchParams;
 
 struct FTransientSourceWrapper
 {
@@ -50,10 +52,11 @@ public:
 // =======================================================================
 public:
 	/**
-	  * Registers a persistent influence volume.
+	 * Registers a persistent influence volume.
 	 * @param InVolume  Pointer to the volume that will report its influence data every frame.
 	 */
 	void RegisterVolume(ATCATInfluenceVolume* InVolume);
+	
 	/**
 	 * Unregisters a volume.
 	 * @param InVolume  Pointer to the volume to be removed from the registry.
@@ -73,6 +76,7 @@ public:
 	 * @param InComp  Pointer to the component that will report its influence data every frame.
 	 */
 	void RegisterComponent(UTCATInfluenceComponent* InComp);
+	
 	/**
 	 * Unregisters a component from the specified map group.
 	 * @param InComp  Pointer to the component to be removed from the registry.
@@ -119,6 +123,7 @@ public:
 private:
 	void SyncVolumeWithExistingComponents(ATCATInfluenceVolume* Volume);
 	void AttachComponentTagsToVolumes(UTCATInfluenceComponent* InComp);	
+	
 // =======================================================================
 // Public API - Global Curve System
 // =======================================================================
@@ -157,21 +162,24 @@ public:
 // =======================================================================
 protected:
 	/** Cached maximum resolution from global settings to prevent GPU crashes. */
-	int32 CachedMaxMapResolution;
+	int32 CachedMaxMapResolution = 1024;
 	
 // =========================================================================================================
 // Private - Volume & Component Registry
 // =======================================================================
+#pragma region Registry
 private:
 	void VLogInfluence();
 	
-	/** * Master list of all registered influence components in the world. */
+	/** Master list of all registered influence volumes in the world. */
+	UPROPERTY()
 	TSet<TObjectPtr<ATCATInfluenceVolume>> RegisteredVolumes;
 	
 	/** Groups persistent volumes by their MapTag for optimized lookups. */
 	TMap<FName, TSet<ATCATInfluenceVolume*>> MapGroupedVolumes;
 	
-	/** * Master list of all registered influence components in the world. */
+	/** Master list of all registered influence components in the world. */
+	UPROPERTY()
 	TSet<TObjectPtr<UTCATInfluenceComponent>> RegisteredComponents;
 	
 	/** Groups persistent components by their MapTag for optimized lookups. */
@@ -179,19 +187,17 @@ private:
 
 	/** Stores one-frame transient influence data. */
 	TArray<FTransientSourceWrapper> AllTransientSources;
-	
+#pragma endregion
+
 // =======================================================================	
 // Private - GPU Dispatch
 // =======================================================================
+#pragma region Dispatch
 private:
-	struct FTCATInfluenceDispatchParams CreateDispatchParams(ATCATInfluenceVolume* Volume, FName LayerTag);
-	struct FTCATCompositeDispatchParams CreateCompositeDispatchParams(ATCATInfluenceVolume* Volume, const FTCATCompositeLayerConfig& CompositeLayer);
+	FTCATInfluenceDispatchParams CreateDispatchParams(ATCATInfluenceVolume* Volume, FName LayerTag);
+	FTCATCompositeDispatchParams CreateCompositeDispatchParams(ATCATInfluenceVolume* Volume, const FTCATCompositeLayerConfig& CompositeLayer);
 	void RetrieveGPUResults(ATCATInfluenceVolume* Volume);
 
-// =======================================================================	
-// Private - CPU Dispatch
-// =======================================================================
-private:
 	// ADDED: Lightweight version for CPU-only composite updates (no RingBuffer advance)
 	FTCATCompositeDispatchParams CreateCompositeDispatchParamsForCPU(
 		ATCATInfluenceVolume* Volume, const FTCATCompositeLayerConfig& CompositeLayer);
@@ -202,11 +208,12 @@ private:
 		FTCATGridResource& LayerRes,
 		const TArray<FTCATInfluenceSource>& OldSources,
 		const TArray<FTCATInfluenceSource>& NewSources);
-
+#pragma endregion
 
 // =======================================================================	
 // Private - Global Curve Atlas System
 // =======================================================================
+#pragma region CurveAtlas
 private:
 	void InitializeStaticGlobalCurveAtlas();
 	
@@ -218,12 +225,12 @@ private:
 	
 	TArray<float> GlobalAtlasPixelData;
 	FTextureRHIRef GlobalCurveAtlasRHI;
-	bool bGlobalAtlasInitialized = false;
-		
+	
 	// Constants
 	const int32 ATLAS_TEXTURE_WIDTH = 256;
 	const int32 MAX_ATLAS_HEIGHT = 256; // For now
 	const FString CURVE_SEARCH_PATH = TEXT("/TCAT/TCAT/Curves");
+#pragma endregion 
 	
 // =======================================================================	
 // Private - Query Processing
@@ -234,10 +241,9 @@ private:
 // =======================================================================	
 // Private - Adaptive GPU/CPU Mode Switching
 // =======================================================================
+#pragma region AdaptiveSwitching
 private:
-	/**
-	* Variables prefixed with `Cached` are synchronized with the values set in TCATSettings. 
-	*/
+	/** Variables prefixed with `Cached` are synchronized with the values set in TCATSettings. */
 
 	TFuture<float> CPUMeasurementTask;
 	bool bIsMeasuringCPU = false;
@@ -273,4 +279,5 @@ private:
 
 	/** The total number of sources measured during the last CPU mode measurement. */
 	uint64 LastMeasuredTotalSourceCount = 0;
+#pragma endregion 
 };

@@ -33,8 +33,6 @@ struct FTCATInfluenceDispatchParams
 	
 	// -- GPU ONLY DATA --
 	FTextureRHIRef OutInfluenceMapRHI;
-	bool bIsAsync = false;
-	// -- Async ONLY DATA --
 	class FRHIGPUTextureReadback* GPUReadback = nullptr;
 
 	int32 AtlasWidth = 256;
@@ -61,7 +59,6 @@ struct FTCATCompositeDispatchParams
 	TArray<float>* OutGridData = nullptr;
 
 	// Readback control (matches existing pattern)
-	bool bIsAsync = false;
 	class FRHIGPUTextureReadback* GPUReadback = nullptr;
 	
 	bool bEnableWrite = true;

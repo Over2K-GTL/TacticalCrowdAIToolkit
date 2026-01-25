@@ -9,6 +9,7 @@
 class UCurveFloat;
 class AActor;
 
+/** Defines the operation type for the influence map query. */
 enum class ETCATQueryType : uint8
 {
 	HighestValue,
@@ -20,6 +21,7 @@ enum class ETCATQueryType : uint8
 	Gradient,
 };
 
+/** A single result entry returned from a query. */
 USTRUCT(BlueprintType)
 struct FTCATSingleResult
 {
@@ -53,6 +55,7 @@ namespace TCATQueryConstants
 
 using namespace  TCATQueryConstants;
 
+/** Defines how distance from the query center affects the scoring. */
 UENUM(BlueprintType)
 enum class ETCATDistanceBias : uint8
 {
@@ -98,8 +101,10 @@ struct FTCATQueryDebugInfo
 };
 #endif
 
+/** Internal structure representing a queued query request. */
 struct FTCATBatchQuery
 {
+	/** If true, this query has been cancelled and will be skipped. */
 	bool bIsCancelled = false;
 
 	// Basic Info
@@ -126,14 +131,15 @@ struct FTCATBatchQuery
 	bool bIgnoreZValue = false;
 	bool bExcludeUnreachableLocation = false;
 	bool bTraceVisibility = false;
-
-    /** Adds a deterministic jitter to break ties between identical values. */
-    bool bUseRandomizedTiebreaker = true;
+	bool bUseRandomizedTiebreaker = true;
 
 	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None;
 	float DistanceBiasWeight = 0.0f;
 	
+	/** Container for the final query results. */
 	TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>> OutResults;
+	
+	/** Callback function executed on the Game Thread upon completion. */
 	TFunction<void(const TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>&)> OnComplete;
 
 #if ENABLE_VISUAL_LOG
@@ -141,6 +147,7 @@ struct FTCATBatchQuery
 #endif
 };
 
+/** Custom tick function to execute query processing during the game update loop. */
 struct FTCATBatchTickFunction : public FTickFunction
 {
 	struct FTCATQueryProcessor* Processor;

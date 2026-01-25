@@ -24,13 +24,13 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("Total_Influence_Sources"), STAT_TCAT_SourceCoun
 DECLARE_MEMORY_STAT(TEXT("Influence_Grid_Memory"), STAT_TCAT_Grid_Mem, STATGROUP_TCAT);
 
 static TAutoConsoleVariable<int32> CVarTCATLogStride(
-	TEXT("TCAT.Debug.LogStride"),
+	TEXT("TCAT.Debug.LayerLogStride"),
 	4,
 	TEXT("Step size for Visual Logger text rendering to improve performance."),
 	ECVF_Cheat);
 
 static TAutoConsoleVariable<float> CVarTCATTextOffset(
-	TEXT("TCAT.Debug.TextOffset"),
+	TEXT("TCAT.Debug.LayerTextOffset"),
 	50.0f,
 	TEXT("Z-Offset for Visual Logger text to prevent clipping."),
 	ECVF_Cheat);
@@ -831,21 +831,6 @@ UTextureRenderTarget2D* ATCATInfluenceVolume::GetHeightRenderTarget() const
 FTextureRenderTargetResource* ATCATInfluenceVolume::GetHeightRenderTargetTexture() const
 {
 	UTextureRenderTarget2D* TargetRT = GetHeightRenderTarget();
-	return TargetRT ? TargetRT->GameThread_GetRenderTargetResource() : nullptr;
-}
-
-UTextureRenderTarget2D* ATCATInfluenceVolume::GetInfluenceRenderTarget(FName LayerTag) const
-{
-	if (const FTCATGridResource* FoundLayer = InfluenceLayers.Find(LayerTag))
-	{
-		return FoundLayer->RenderTarget;
-	}
-	return nullptr;
-}
-
-FTextureRenderTargetResource* ATCATInfluenceVolume::GetInfluenceRenderTargetTexture(FName LayerTag) const
-{
-	UTextureRenderTarget2D* TargetRT = GetInfluenceRenderTarget(LayerTag);
 	return TargetRT ? TargetRT->GameThread_GetRenderTargetResource() : nullptr;
 }
 

@@ -16,11 +16,11 @@ struct FTCATHeightMapModule
 	GENERATED_BODY()
 	
 public:
-	UPROPERTY(EditAnywhere, Category="TCAT")
+	UPROPERTY(EditAnywhere, Category="TCAT|Debug")
 	bool bDrawHeight = false;
 	
 	// Check Height, and will be appear in Red Dot if it's above HeightToMark in Borderline
-	UPROPERTY(EditAnywhere, Category="TCAT", meta = (EditCondition = "bDrawHeight"))
+	UPROPERTY(EditAnywhere, Category="TCAT|Debug", meta = (EditCondition = "bDrawHeight"))
 	float HeightToMark = 50.0f;
 	
 public:

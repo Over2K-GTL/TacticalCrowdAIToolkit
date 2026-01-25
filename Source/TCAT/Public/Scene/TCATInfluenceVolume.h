@@ -249,11 +249,7 @@ protected:
 
     /** If true, the influence map is generated using Compute Shaders on the GPU. */
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="TCAT|Performance")
-    bool bRefreshWithGPU = true;
-    
-    /** Enables non-blocking GPU-to-CPU data transfer. */
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="TCAT|Performance", meta=(EditCondition="bRefreshWithGPU"))
-    bool bAsyncReadback = true;
+    bool bRefreshWithGPU = true;;
     
     /** If true, enables position extrapolation for influence calculations. 
     Because the results of the influence map update arrive a few frames later, this option predicts the position of the InfluenceComponent a few frames ahead and uses that position for the influence map update. */
@@ -264,11 +260,11 @@ protected:
     if the delta time increases by more than 켼edictionCorrectionThresholdtimes compared to the previous delta time, 
     the PredictionTime is not immediately increased. Instead, the previously used PredictionTime is used.
     For more detailed information, refer to the code that uses the variable. */
-    UPROPERTY(EditAnywhere, Category = "TCAT|Advanced")
+    UPROPERTY(EditAnywhere, Category = "TCAT", AdvancedDisplay)
 	float PredictionCorrectionThreshold = 2.0f;
 
     /** The degree to which acceleration is reflected in the prediction */
-    UPROPERTY(EditAnywhere, Category = "TCAT|Advanced")
+    UPROPERTY(EditAnywhere, Category = "TCAT", AdvancedDisplay)
     float AccelerationPredictionFactor = 1.0f;
 
 private:
@@ -292,23 +288,16 @@ public:
 
     /** Returns the RenderTargetResource for the Global Height map. */
     FTextureRenderTargetResource* GetHeightRenderTargetTexture() const;
-
-    /** --- Influence Resource Accessors -- */
-    /** Returns the RenderTarget for a specific influence layer tag. */
-    UTextureRenderTarget2D* GetInfluenceRenderTarget(FName LayerTag) const;
-
-    /** Returns the RenderTargetResource for a specific influence layer tag. */
-    FTextureRenderTargetResource* GetInfluenceRenderTargetTexture(FName LayerTag) const;
     
 private:
     class UTCATSubsystem* GetTCATSubsystem() const;
         
     /** Height Layer */
-    UPROPERTY(VisibleInstanceOnly, Transient, Category = "TCAT|Advanced")
-    FTCATGridResource HeightResource;
+    UPROPERTY(VisibleInstanceOnly, Transient, Category = "TCAT", AdvancedDisplay)
+    FTCATHeightMapResource HeightResource;
 
     /** Influence Layers per Tag */
-    UPROPERTY(VisibleInstanceOnly, Category = "TCAT|Advanced")
+    UPROPERTY(VisibleInstanceOnly, Category = "TCAT", AdvancedDisplay)
     TMap<FName, FTCATGridResource> InfluenceLayers;
 
     /** Source Data per Tag (Updated Every Frame) */
@@ -328,11 +317,11 @@ private:
 // Debug
 //~=============================================================================
 protected:
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="TCAT|Performance", meta=(EditCondition="bRefreshWithGPU && bAsyncReadback"))
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="TCAT|Performance", meta=(EditCondition="bRefreshWithGPU"))
     bool bLogAsyncFrame = false;
 
 	/** If true, forces single-threaded update of the influence map when bRefreshWithGPU is false, useful for debugging. */
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "TCAT|Advanced", meta=(EditCondition="!bRefreshWithGPU"))
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "TCAT", AdvancedDisplay, meta=(EditCondition="!bRefreshWithGPU"))
 	bool bForceCPUSingleThreadUpdate = false;
     
 private:

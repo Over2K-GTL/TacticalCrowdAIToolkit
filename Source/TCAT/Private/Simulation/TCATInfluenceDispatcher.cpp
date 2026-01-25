@@ -133,7 +133,7 @@ void FTCATInfluenceDispatcher::DispatchGPU_Batched(
 				ComputeShader, PassParameters, GroupCount
 			);
 
-    		if (Params.bIsAsync && Params.GPUReadback)
+    		if (Params.GPUReadback)
     		{
     			AddEnqueueCopyPass(GraphBuilder, Params.GPUReadback, OutputTexture);
     		}
@@ -309,7 +309,7 @@ void FTCATInfluenceDispatcher::DispatchGPU_Batched(
 			AddCopyTexturePass(GraphBuilder, SrcTex, OutputTexture);
 
 			// Handle async readback
-			if (Params.bIsAsync && Params.GPUReadback)
+			if (Params.GPUReadback)
 			{
 				AddEnqueueCopyPass(GraphBuilder, Params.GPUReadback, OutputTexture);
 			}
@@ -317,81 +317,6 @@ void FTCATInfluenceDispatcher::DispatchGPU_Batched(
 	}
 
     GraphBuilder.Execute();
-
-	// Readback for influence volumes
-    for (const FTCATInfluenceDispatchParams& Params : InfluenceBatch)
-    {
-    	if (Params.bIsAsync || !Params.OutGridData || !Params.OutInfluenceMapRHI.IsValid())
-    	{
-    		continue;
-    	}
-    	TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_SyncReadback_STALL); 
-        SCOPE_CYCLE_COUNTER(STAT_TCAT_Readback_Wait);
-
-        const int32 TotalCells = Params.MapSize.X * Params.MapSize.Y;
-        Params.OutGridData->SetNumUninitialized(TotalCells);
-
-        uint32 DestStride = 0;
-        float* GPUDataPtr = static_cast<float*>(RHICmdList.LockTexture2D(Params.OutInfluenceMapRHI, 0, RLM_ReadOnly, DestStride, false));
-    
-        if (GPUDataPtr)
-        {
-        	const uint32 RowPitch = Params.MapSize.X * sizeof(float);
-        	if (DestStride == RowPitch)
-        	{
-        		FMemory::Memcpy(Params.OutGridData->GetData(), GPUDataPtr, TotalCells * sizeof(float));
-        	}
-        	else
-        	{
-        		for (uint32 y = 0; y < Params.MapSize.Y; ++y)
-        		{
-        			FMemory::Memcpy(
-						Params.OutGridData->GetData() + (y * Params.MapSize.X),
-						reinterpret_cast<uint8*>(GPUDataPtr) + (y * DestStride), RowPitch
-					);
-        		}
-        	}
-        	RHICmdList.UnlockTexture2D(Params.OutInfluenceMapRHI, 0, false);
-        }
-    }
-
-	// Readback for composite volumes
-	for (const FTCATCompositeDispatchParams& Params : CompositeBatch)
-	{
-		if (Params.bIsAsync || !Params.OutGridData || !Params.OutInfluenceMapRHI.IsValid())
-		{
-			continue;
-		}
-		
-		TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_SyncReadback_STALL); 
-		SCOPE_CYCLE_COUNTER(STAT_TCAT_Readback_Wait);
-		
-		const int32 TotalCells = Params.MapSize.X * Params.MapSize.Y;
-		Params.OutGridData->SetNumUninitialized(TotalCells);
-
-		uint32 DestStride = 0;
-		float* GPUDataPtr = static_cast<float*>(RHICmdList.LockTexture2D(Params.OutInfluenceMapRHI, 0, RLM_ReadOnly, DestStride, false));
-
-		if (GPUDataPtr)
-		{
-			const uint32 RowPitch = Params.MapSize.X * sizeof(float);
-			if (DestStride == RowPitch)
-			{
-				FMemory::Memcpy(Params.OutGridData->GetData(), GPUDataPtr, TotalCells * sizeof(float));
-			}
-			else
-			{
-				for (uint32 y = 0; y < Params.MapSize.Y; ++y)
-				{
-					FMemory::Memcpy(
-						Params.OutGridData->GetData() + (y * Params.MapSize.X),
-						reinterpret_cast<uint8*>(GPUDataPtr) + (y * DestStride), RowPitch
-					);
-				}
-			}
-			RHICmdList.UnlockTexture2D(Params.OutInfluenceMapRHI, 0, false);
-		}
-	}
 }
 
 void FTCATInfluenceDispatcher::DispatchCPU(const FTCATInfluenceDispatchParams& Params)

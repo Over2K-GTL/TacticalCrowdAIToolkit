@@ -184,6 +184,11 @@ void UBTService_TCATAsyncQuery::TickNode(UBehaviorTreeComponent& OwnerComp, uint
     NewQuery.bTraceVisibility = bTraceVisibility;
     NewQuery.bIgnoreZValue = bIgnoreZValue;
     NewQuery.bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+    
+#if ENABLE_VISUAL_LOG
+    NewQuery.DebugInfo.bEnabled = bDebugQuery;
+#endif
+    
     NewQuery.DistanceBiasType = DistanceBiasType;
     NewQuery.DistanceBiasWeight = DistanceBiasWeight;
 

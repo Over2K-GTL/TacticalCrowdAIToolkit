@@ -329,52 +329,6 @@ void UTCATInfluenceComponent::UpdateCachedRecipes(const ATCATInfluenceVolume* Vo
 // Debug - Visual Logger
 //~=============================================================================
 
-#if ENABLE_VISUAL_LOG
-
-void UTCATInfluenceComponent::ApplyQueryDebugSettings(FTCATBatchQuery& Query) const
-{
-	if (!bDebugMyQueries || !FVisualLogger::IsRecording())
-	{
-		return;
-	}
-
-	const AActor* Owner = GetOwner();
-	if (!Owner)
-	{
-		return;
-	}
-
-	// Enable debug visualization
-	Query.DebugInfo.bEnabled = true;
-	Query.DebugInfo.DebugOwner = Owner;
-	
-	// Generate unique color per component based on query seed and actor ID
-	const uint32 ColorSeed = HashCombineFast(Query.RandomSeed, static_cast<uint32>(Owner->GetUniqueID()));
-	const uint8 Hue = static_cast<uint8>(ColorSeed & 0xFF);
-	Query.DebugInfo.BaseColor = FLinearColor::MakeFromHSV8(Hue, 200, 255);
-	
-	// Apply sample stride
-	Query.DebugInfo.SampleStride = FMath::Max(1, DebugQueryStride);
-
-	// Stack queries vertically for better visibility
-	const float HeightStep = FMath::Max(5.0f, DebugQueryHeightStep);
-	Query.DebugInfo.HeightOffset = HeightStep * GetNextDebugQueryLayer();
-}
-
-int32 UTCATInfluenceComponent::GetNextDebugQueryLayer() const
-{
-	// Reset counter on new frame
-	if (LastDebugQueryFrame != GFrameNumber)
-	{
-		LastDebugQueryFrame = GFrameNumber;
-		DebugQueryCounter = 0;
-	}
-
-	return DebugQueryCounter++;
-}
-
-#endif // ENABLE_VISUAL_LOG
-
 void UTCATInfluenceComponent::VLogInfluence() const
 {
 	static const FName LogCategory = TEXT("TCATInfluenceSources");

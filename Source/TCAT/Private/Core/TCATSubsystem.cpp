@@ -1,4 +1,4 @@
-﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
+// Copyright 2025-2026 Over2K. All Rights Reserved.
 
 
 #include "Core/TCATSubsystem.h"
@@ -40,7 +40,7 @@ void UTCATSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	{
 		// Fallback to safe hardcoded defaults if settings are missing
 		CachedMaxMapResolution = 1024;
-		UE_LOG(LogTCAT, Warning, TEXT("TCATSubsystem: Settings not found! Using hardware safety defaults."));
+		UE_LOG(LogTCAT, Warning, TEXT("TCATSubsystem: Settings not found! Using hardware safety defaults (1024)."));
 	}
 
 	QueryProcessor.Initialize(GetWorld(), &MapGroupedVolumes);
@@ -55,8 +55,6 @@ void UTCATSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	AdaptiveModeSwitchingStartSeconds = GetWorld()->GetTimeSeconds() + CachedAdaptiveModeSwitchingDelay;
 	bIsFirstCheck = true;
-
-	UE_LOG(LogTCAT, Log, TEXT("[TCATSubsystem] TCATSubsystem Initialized!"));
 }
 
 void UTCATSubsystem::Deinitialize()
@@ -100,7 +98,9 @@ void UTCATSubsystem::Tick(float DeltaTime)
 	CPUMeasurementInfluenceParams.Reserve(16);
 	CPUMeasurementCompositeParams.Reserve(8);
 
-	// --- Phase 1: Data Preparation & Source Pass ---
+	// =========================================================================
+	// Phase 1: Data Preparation & Source Pass (GPU & CPU)
+	// =========================================================================
 	uint64 CurrentTotalSourceCount = 0;
 	for (auto Volume : RegisteredVolumes)
 	{
@@ -140,7 +140,9 @@ void UTCATSubsystem::Tick(float DeltaTime)
 		}
 	}
 
-	// --- Phase 2: Internal Composite Pass ---
+	// =========================================================================
+	// Phase 2: Internal Composite Pass
+	// =========================================================================
 	for (auto Volume : RegisteredVolumes)
 	{
 		if (!IsValid(Volume) || Volume->CompositeLayers.Num() == 0) { continue; }
@@ -179,7 +181,9 @@ void UTCATSubsystem::Tick(float DeltaTime)
 		}
 	}
 
-	// --- Phase 3: Execute both batches in single RDG graph ---
+	// =========================================================================
+	// Phase 3: Execute Batch Dispatch (Single RDG Graph)
+	// =========================================================================
 	if (InfluenceBatch.Num() > 0 || CompositeBatch.Num() > 0)
 	{
 		ENQUEUE_RENDER_COMMAND(TCAT_DispatchBatchUpdate)(
@@ -190,7 +194,9 @@ void UTCATSubsystem::Tick(float DeltaTime)
 			});
 	}
 
-	// --- Phase 4: Transient Influence Update ---
+	// =========================================================================
+	// Phase 4: Update Transient Influences
+	// =========================================================================
 	for (int32 i = AllTransientSources.Num() - 1; i >= 0; --i)
 	{
 		FTransientSourceWrapper& SourceWrapper = AllTransientSources[i];
@@ -203,7 +209,9 @@ void UTCATSubsystem::Tick(float DeltaTime)
 		}
 	}
 
-	// --- Phase 5:Launch CPU Measurement Task (if needed) ---
+	// =========================================================================
+	// Phase 5: Launch Async CPU Performance Measurement
+	// =========================================================================
 	if (bShouldMeasureCPUMode && !bIsMeasuringCPU &&
 		(CPUMeasurementInfluenceParams.Num() > 0 || CPUMeasurementCompositeParams.Num() > 0))
 	{
@@ -251,7 +259,9 @@ void UTCATSubsystem::Tick(float DeltaTime)
 	const float TickEndTimeMs = FPlatformTime::ToMilliseconds(FPlatformTime::Cycles());
 	CurTickTimeMs = TickEndTimeMs - TickStartTimeMs;
 
-	// --- Phase 6: Process the measurement results and determine whether to switch the map update mode for volumes where bAdaptivelySwitchRefreshMode is true. ---
+	// =========================================================================
+	// Phase 6: Adaptive Mode Switching Logic (GPU <-> CPU)
+	// =========================================================================
 	if (bRefreshWithGPUForAdaptiveVolumes)
 	{
 		GPUModeTickTimeMs = CurTickTimeMs;
@@ -328,7 +338,9 @@ void UTCATSubsystem::Tick(float DeltaTime)
 
 	}
 
-	// --- Phase 6: VLog ---
+	// =========================================================================
+	// Phase 7: Visual Logger
+	// =========================================================================
 	VLogInfluence();
 }
 void UTCATSubsystem::RegisterVolume(ATCATInfluenceVolume* InVolume)
@@ -657,32 +669,23 @@ FTCATInfluenceDispatchParams UTCATSubsystem::CreateDispatchParams(ATCATInfluence
     Params.VolumeName = FString::Printf(TEXT("%s_%s"), *Volume->GetName(), *LayerTag.ToString());
     Params.Sources = MoveTemp(*LayerSources);
 
-    Params.bIsAsync = Volume->bAsyncReadback;
 	if (Volume->bRefreshWithGPU)
 	{
-		if (Params.bIsAsync)
+		FTCATAsyncResource WriteResource;
+		// Each layer now manages its own RingBuffer
+		if (!LayerRes->AsyncRingBuffer.AdvanceWriteResource(WriteResource, PredictionTime, LayerSourcesWithOwners))
 		{
-			FTCATAsyncResource WriteResource;
-			// Each layer now manages its own RingBuffer
-			if (!LayerRes->AsyncRingBuffer.AdvanceWriteResource(WriteResource, PredictionTime, LayerSourcesWithOwners))
-			{
-				Params.bEnableWrite = false;
-				UE_LOG(LogTCAT, Warning, TEXT("Layer[%s] in Volume[%s] Async Ring Buffer is full!"),
-				   *LayerTag.ToString(), *Volume->GetActorNameOrLabel());
-				return Params;
-			}
-
-			FTextureRenderTargetResource* RTResource = WriteResource.RenderTarget->GameThread_GetRenderTargetResource();
-			Params.OutInfluenceMapRHI = RTResource ? RTResource->GetRenderTargetTexture() : FTextureRHIRef();
-			Params.GPUReadback = WriteResource.Readback;
-
-			LayerRes->LastRequestFrame = GFrameCounter;
+			Params.bEnableWrite = false;
+			UE_LOG(LogTCAT, Warning, TEXT("Layer[%s] in Volume[%s] Async Ring Buffer is full!"),
+			   *LayerTag.ToString(), *Volume->GetActorNameOrLabel());
+			return Params;
 		}
-		else
-		{
-			FTextureRenderTargetResource* RTResource = LayerRes->RenderTarget->GameThread_GetRenderTargetResource();
-			Params.OutInfluenceMapRHI = RTResource ? RTResource->GetRenderTargetTexture() : FTextureRHIRef();
-		}
+
+		FTextureRenderTargetResource* RTResource = WriteResource.RenderTarget->GameThread_GetRenderTargetResource();
+		Params.OutInfluenceMapRHI = RTResource ? RTResource->GetRenderTargetTexture() : FTextureRHIRef();
+		Params.GPUReadback = WriteResource.Readback;
+
+		LayerRes->LastRequestFrame = GFrameCounter;
 	}
 
     Params.CurveAtlasPixelData = GlobalAtlasPixelData;
@@ -757,17 +760,10 @@ FTCATCompositeDispatchParams UTCATSubsystem::CreateCompositeDispatchParams(ATCAT
 		Params.InputGridDataMap.Add(Tag, const_cast<TArray<float>*>(&LayerRes->Grid));
 
         FTextureRHIRef InputTextureRHI;
-        if (Volume->bAsyncReadback)
-        {
-            const FTCATAsyncResource& LastWrite = LayerRes->AsyncRingBuffer.PeekLastWriteResource();
-            if (LastWrite.RenderTarget && LastWrite.RenderTarget->GetResource())
-                InputTextureRHI = LastWrite.RenderTarget->GetResource()->GetTextureRHI();
-        }
-        else
-        {
-            if (LayerRes->RenderTarget && LayerRes->RenderTarget->GetResource())
-                InputTextureRHI = LayerRes->RenderTarget->GetResource()->GetTextureRHI();
-        }
+		
+		const FTCATAsyncResource& LastWrite = LayerRes->AsyncRingBuffer.PeekLastWriteResource();
+		if (LastWrite.RenderTarget && LastWrite.RenderTarget->GetResource())
+			InputTextureRHI = LastWrite.RenderTarget->GetResource()->GetTextureRHI();
 
         if (InputTextureRHI.IsValid())
         {
@@ -788,32 +784,21 @@ FTCATCompositeDispatchParams UTCATSubsystem::CreateCompositeDispatchParams(ATCAT
 
     Params.MapStartPos = Volume->GetGridOrigin();
     Params.OutGridData = &TargetRes->Grid;
-    Params.bIsAsync = Volume->bAsyncReadback;
 
 	if (Volume->bRefreshWithGPU)
 	{
-		if (Params.bIsAsync)
+		FTCATAsyncResource WriteResource;
+		if (!TargetRes->AsyncRingBuffer.AdvanceWriteResource(WriteResource, PredictionTime))
 		{
-			FTCATAsyncResource WriteResource;
-			if (!TargetRes->AsyncRingBuffer.AdvanceWriteResource(WriteResource, PredictionTime))
-			{
-				Params.bEnableWrite = false;
-				return Params;
-			}
-
-			if (WriteResource.RenderTarget && WriteResource.RenderTarget->GetResource())
-			{
-				Params.OutInfluenceMapRHI = WriteResource.RenderTarget->GetResource()->GetTextureRHI();
-				Params.GPUReadback = WriteResource.Readback;
-				WriteResource.WriteTime = GFrameCounter;
-			}
+			Params.bEnableWrite = false;
+			return Params;
 		}
-		else
+
+		if (WriteResource.RenderTarget && WriteResource.RenderTarget->GetResource())
 		{
-			if (TargetRes->RenderTarget && TargetRes->RenderTarget->GetResource())
-			{
-				Params.OutInfluenceMapRHI = TargetRes->RenderTarget->GetResource()->GetTextureRHI();
-			}
+			Params.OutInfluenceMapRHI = WriteResource.RenderTarget->GetResource()->GetTextureRHI();
+			Params.GPUReadback = WriteResource.Readback;
+			WriteResource.WriteTime = GFrameCounter;
 		}
 
 		Params.bEnableWrite = Params.OutInfluenceMapRHI.IsValid();
@@ -829,7 +814,7 @@ void UTCATSubsystem::RetrieveGPUResults(ATCATInfluenceVolume* Volume)
 	SCOPE_CYCLE_COUNTER(STAT_TCAT_Readback_Retrieve);
 	TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_Readback_Retrieve);
 	
-	if (!Volume || !Volume->bRefreshWithGPU || !Volume->bAsyncReadback) return;
+	if (!Volume || !Volume->bRefreshWithGPU) return;
 
 	for (auto& LayerPair : Volume->InfluenceLayers)
     {
@@ -1000,7 +985,6 @@ FTCATCompositeDispatchParams UTCATSubsystem::CreateCompositeDispatchParamsForCPU
 
 	Params.MapStartPos = Volume->GetGridOrigin();
 	Params.OutGridData = &TargetRes->Grid;
-	Params.bIsAsync = false; // CPU-only, no async
 	Params.bEnableWrite = true;
 	Params.bForceCPUSingleThread = Volume->bForceCPUSingleThreadUpdate;
 

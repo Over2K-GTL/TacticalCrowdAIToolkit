@@ -12,8 +12,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FTCATMultiResultPin, const TArray<FT
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FTCATMultiSearchFailedPin);
 
 /**
- * Multiple Result Version of Search Actions.
- * Returns Top-N results instead of a single best value.
+ * Asynchronous Blueprint Action for Multi-Result queries.
+ * Returns the Top-N highest/lowest influence values instead of a single best result.
  */
 UCLASS()
 class TCAT_API UTCATAsyncMultiSearchAction : public UBlueprintAsyncActionBase
@@ -21,119 +21,112 @@ class TCAT_API UTCATAsyncMultiSearchAction : public UBlueprintAsyncActionBase
     GENERATED_BODY()
 
 public:
-    // Success, return Array(Top N)
+    /** Executed when results are found. Returns an array of up to 'MaxResults' entries. */
     UPROPERTY(BlueprintAssignable)
     FTCATMultiResultPin OnSuccess;
 
-    // Fail, Nothing found
+    /** Executed if no valid results are found. */
     UPROPERTY(BlueprintAssignable)
     FTCATMultiSearchFailedPin OnFailed;
 
     /**
      * Finds the Top-N highest influence values within a specified radius.
+     * 
      * @param MapTag            The influence layer to query.
      * @param SourceComponent   The component acting as the search center.
      * @param SearchRadius      The maximum distance to scan.
      * @param MaxResults        Maximum number of results to return (e.g., Top 3).
-     * @param bSubtractSelfInfluence If true, attempts to subtract the component's own influence.
-	 * If true, attempts to subtract the component's own contribution from the sampled value.
-	 * * @note Requires the composite logic to be **Reversible**. 
-	 * If the layer logic involves lossy operations (e.g., Clamping, Min/Max), 
-	 * the result will be an **Approximation** and may contain slight precision errors.
+     * @param bSubtractSelfInfluence If true, attempts to subtract the component's own contribution from the sampled value.
+     *                          Note: Requires the composite logic to be **Reversible**.
      * @param bExcludeUnreachableLocation [Expensive] Validates NavMesh reachability.
      * @param bTraceVisibility  [Expensive] Validates Line of Sight.
+     * @param bIgnoreZValue     If false, projects result to height map.
      * @param bUseRandomizedTiebreaker Prevents all AIs from rushing to the exact same spot when scores are tied.
-     * @param bIgnoreZValue Projects result to height map.
-	 * @param DistanceBiasType  Determines how distance affects the scoring.
-	 * - None: Distance is ignored. Only the map value matters.
-	 * - Standard: Linear falloff (1.0 at center, 0.0 at radius).
-	 * - Relaxed: Convex curve (1-x^2). Favors a broader range of nearby areas.
-	 * - Focused: Concave curve ((1-x)^2). Strictly prioritizes the immediate vicinity.
-	 * @param DistanceBiasWeight Multiplier for the distance score.
-	 * A value of 1.0 adds the full normalized distance score (0.0~1.0) to the influence value.
-	 * Higher values make proximity more important than the influence map's raw value.
-	 * @param InfluenceHalfHeightOverride Optional Influence Half Height Override -1 uses the source component default, 0 disables the reachability filter.
+     * @param DistanceBiasType  Determines how distance affects the scoring.
+     * @param DistanceBiasWeight Multiplier for the distance score.
+     * @param InfluenceHalfHeightOverride Optional override for the Influence Half Height check.
+     *                           -1: Use Source Component's default.
+     *                            0: Disable height check (Infinite cylinder).
+     * @param bDebug            If true, draws debug information.
+     * 
+     * @return An async action node.
      */
-    UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Highest Values (Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker, DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
+    UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Highest Values (Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker, DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride,  WorldPosToQueryOverride, bDebug", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
     static UTCATAsyncMultiSearchAction* SearchHighestValues(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent = nullptr,
-    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false,
-	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f, bool bUseWorldPosOverride = false, const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
+    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false, bool bDebug = false,
+	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f, const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
 
 	/**
 	 * Finds the Top-N lowest influence values within a specified radius.
+	 * 
+     * @param MapTag            The influence layer to query.
+     * @param SourceComponent   The component acting as the search center.
+     * @param SearchRadius      The maximum distance to scan.
+     * @param MaxResults        Maximum number of results to return.
+     * @param bSubtractSelfInfluence If true, subtracts self influence.
+     * @param bExcludeUnreachableLocation [Expensive] Validates NavMesh reachability.
+     * @param bTraceVisibility  [Expensive] Validates Line of Sight.
+     * @param bIgnoreZValue     If false, projects result to height map.
+     * @param bUseRandomizedTiebreaker Prevents tie-breaking overlap.
+     * @param DistanceBiasType  Determines how distance affects the scoring.
+     * @param DistanceBiasWeight Multiplier for the distance score.
+     * @param InfluenceHalfHeightOverride Optional height override.
+     * @param bDebug            If true, draws debug information.
 	 */
-	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Lowest Values (Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker,DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Lowest Values (Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker,DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride,  WorldPosToQueryOverride, bDebug", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
 	static UTCATAsyncMultiSearchAction* SearchLowestValues(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent = nullptr,
-	UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false,
-	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f, bool bUseWorldPosOverride = false, const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
+	UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false, bool bDebug = false,
+	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f,  const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
 
 	/**
-	 * Searches for the HIGHEST influence value, but only considers areas meeting a specific condition.
-	 * Example: "Find the safest point (Highest Safety) where the fire damage is zero (Condition < 0)."
+	 * Searches for the HIGHEST influence values, but only considers areas meeting a specific condition.
+	 * Example: "Find Top 3 safest points (Highest Safety) where the fire damage is zero (Condition < 0)."
 	 *
-	 * @param MapTag            The influence layer to search for the highest value.
+	 * @param MapTag            The influence layer to query.
 	 * @param CompareValue      The condition threshold.
 	 * @param CompareType       The condition operator.
 	 * @param SourceComponent   The search origin.
 	 * @param SearchRadius      The search area radius.
-	 * @param bSubtractSelfInfluence If true, attempts to subtract the component's own influence for the calculation.
-	 * If true, attempts to subtract the component's own contribution from the sampled value.
-	 * * @note Requires the composite logic to be **Reversible**. 
-	 * If the layer logic involves lossy operations (e.g., Clamping, Min/Max), 
-	 * the result will be an **Approximation** and may contain slight precision errors.
-	 * @param bExcludeUnreachableLocation [Expensive] Validate NavMesh reachability.
-	 * @param bTraceVisibility  [Expensive] Validate Line of Sight.
-	 * @param bIgnoreZValue Project result to height map.
-	 * @param bUseRandomizedTiebreaker Prevents all AIs from rushing to the exact same spot when scores are tied.
+	 * @param bSubtractSelfInfluence If true, subtracts self influence.
+	 * @param bExcludeUnreachableLocation [Expensive] Validates NavMesh reachability.
+	 * @param bTraceVisibility  [Expensive] Validates Line of Sight.
+	 * @param bIgnoreZValue     If false, respects the terrain height map.
+	 * @param bUseRandomizedTiebreaker Prevents tie-breaking overlap.
 	 * @param DistanceBiasType  Determines how distance affects the scoring.
-	 * - None: Distance is ignored. Only the map value matters.
-	 * - Standard: Linear falloff (1.0 at center, 0.0 at radius).
-	 * - Relaxed: Convex curve (1-x^2). Favors a broader range of nearby areas.
-	 * - Focused: Concave curve ((1-x)^2). Strictly prioritizes the immediate vicinity.
 	 * @param DistanceBiasWeight Multiplier for the distance score.
-	 * Allows negative values to invert the effect (Penalty).
-	 * A value of 1.0 adds the full normalized distance score (0.0~1.0) to the influence value.
-	 * Higher values make proximity more important than the influence map's raw value.
-	 * (Only applied when DistanceBiasType is not None)
+	 * @param InfluenceHalfHeightOverride Optional height override.
+	 * @param bDebug            If true, draws debug information.
+	 * 
+	 * @return Async action node.
 	 */
-	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Highest Values In Condition(Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker,DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Highest Values In Condition(Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker,DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride,  WorldPosToQueryOverride, bDebug", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
     static UTCATAsyncMultiSearchAction* SearchHighestValuesInCondition(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent = nullptr,
-    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, float CompareValue = 0.0f, ETCATCompareType CompareType = ETCATCompareType::Greater, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false,
-    ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f, bool bUseWorldPosOverride = false, const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
+    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, float CompareValue = 0.0f, ETCATCompareType CompareType = ETCATCompareType::Greater, int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false, bool bDebug = false,
+    ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f,  const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
 
 	/**
-	 * Searches for the LOWEST influence value, but only considers areas meeting a specific condition.
-	 * Example: "Find the point with least enemy presence (Lowest Threat) that is also within attack range (Condition < Range)."
-	 *
-	 * @param MapTag            The influence layer to search for the lowest value.
-	 * @param CompareValue      The condition threshold.
-	 * @param CompareType       The condition operator.
-	 * @param SourceComponent   The search origin.
-	 * @param SearchRadius      The search area radius.
-	 * @param bSubtractSelfInfluence If true, attempts to subtract the component's own influence for the calculation.
-	 * If true, attempts to subtract the component's own contribution from the sampled value.
-	 * * @note Requires the composite logic to be **Reversible**. 
-	 * If the layer logic involves lossy operations (e.g., Clamping, Min/Max), 
-	 * the result will be an **Approximation** and may contain slight precision errors.
-	 * @param bExcludeUnreachableLocation [Expensive] Validate NavMesh reachability.
-	 * @param bTraceVisibility  [Expensive] Validate Line of Sight.
-	 * @param bIgnoreZValue If false, respects the terrain height map.
-	 * @param bUseRandomizedTiebreaker Prevents all AIs from rushing to the exact same spot when scores are tied.
-	 * @param DistanceBiasType  Determines how distance affects the scoring.
-	 * - None: Distance is ignored. Only the map value matters.
-	 * - Standard: Linear falloff (1.0 at center, 0.0 at radius).
-	 * - Relaxed: Convex curve (1-x^2). Favors a broader range of nearby areas.
-	 * - Focused: Concave curve ((1-x)^2). Strictly prioritizes the immediate vicinity.
-	 * @param DistanceBiasWeight Multiplier for the distance score.
-	 * Allows negative values to invert the effect (Penalty).
-	 * A value of 1.0 adds the full normalized distance score (0.0~1.0) to the influence value.
-	 * Higher values make proximity more important than the influence map's raw value.
-	 * (Only applied when DistanceBiasType is not None)
+	 * Searches for the LOWEST influence values, but only considers areas meeting a specific condition.
+	 * Example: "Find Top 3 points with least enemy presence (Lowest Threat) that are also within attack range (Condition < Range)."
+	 * 
+     * @param MapTag            The influence layer to query.
+     * @param CompareValue      The condition threshold.
+     * @param CompareType       The condition operator.
+     * @param SourceComponent   The search origin.
+     * @param SearchRadius      The search area radius.
+     * @param bSubtractSelfInfluence If true, subtracts self influence.
+     * @param bExcludeUnreachableLocation [Expensive] Validates NavMesh reachability.
+     * @param bTraceVisibility  [Expensive] Validates Line of Sight.
+     * @param bIgnoreZValue     If false, respects the terrain height map.
+     * @param bUseRandomizedTiebreaker Prevents tie-breaking overlap.
+     * @param DistanceBiasType  Determines how distance affects the scoring.
+     * @param DistanceBiasWeight Multiplier for the distance score.
+     * @param InfluenceHalfHeightOverride Optional height override.
+     * @param bDebug            If true, draws debug information.
 	 */
-	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Lowest Values In Condition(Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker,DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride, bUseWorldPosOverride, WorldPosToQueryOverride", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject", DisplayName = "Search Lowest Values In Condition(Multi)", AdvancedDisplay = "bSubtractSelfInfluence, bExcludeUnreachableLocation, bTraceVisibility, bIgnoreZValue, bUseRandomizedTiebreaker,DistanceBiasType, DistanceBiasWeight, InfluenceHalfHeightOverride,  WorldPosToQueryOverride, bDebug", AutoCreateRefTerm="WorldPosToQueryOverride"), Category = "TCAT|Query")
     static UTCATAsyncMultiSearchAction* SearchLowestValuesInCondition(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent = nullptr,
-    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, float CompareValue = 0.0f, ETCATCompareType CompareType = ETCATCompareType::Greater,  int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false,
-	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f, bool bUseWorldPosOverride = false, const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
+    UPARAM(meta=(ClampMin="0.0")) float SearchRadius = 500.0f, float CompareValue = 0.0f, ETCATCompareType CompareType = ETCATCompareType::Greater,  int32 MaxResults = 3, bool bSubtractSelfInfluence = false, bool bExcludeUnreachableLocation = false, bool bTraceVisibility = false, bool bIgnoreZValue = false, bool bUseRandomizedTiebreaker = false, bool bDebug = false,
+	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None, float DistanceBiasWeight = 1.0, UPARAM(meta=(ClampMin="-1.0")) float InfluenceHalfHeightOverride = -1.0f,  const FVector& WorldPosToQueryOverride = FVector::ZeroVector);
 
     virtual void Activate() override;
     static void ResetPool();
@@ -171,12 +164,10 @@ private:
 
     /** Disables the tie-breaking jitter so identical scores stay identical. */
     bool bUseRandomizedTiebreaker = true;
+    bool bDebugQuery = false;
 
     ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None;
     float DistanceBiasWeight = 0.0f;
 
-	FVector WorldPosOverride = FVector::ZeroVector;
-	bool bUseWorldPosOverride = false;
+	FVector WorldPosOffset = FVector::ZeroVector;
 };
-
-

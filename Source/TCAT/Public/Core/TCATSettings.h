@@ -45,16 +45,7 @@ public:
 	 * Used for general selection in Influence Volumes.
 	 */
 	UFUNCTION()
-	static TArray<FString> GetAllTagOptions()
-	{
-		TArray<FString> Options;
-		if (const UTCATSettings* Settings = GetDefault<UTCATSettings>())
-		{
-			for (const FName& Tag : Settings->BaseInfluenceTags) Options.Add(Tag.ToString());
-			for (const FName& Tag : Settings->CompositeInfluenceTags) Options.Add(Tag.ToString());
-		}
-		return Options;
-	}
+	static TArray<FString> GetAllTagOptions();
 
 	/** Returns only base tags, typically used for Influence Component selection. */
 	UFUNCTION()

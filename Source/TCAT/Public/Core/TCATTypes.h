@@ -55,9 +55,8 @@ struct FTCATInfluenceSource
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Influence", meta=(AdvancedDisplay))
     float InfluenceHalfHeight;
-
-    // Only Follows Influence Component's LineOfSightOffset Setting in TCAT|Advanced Category 
-    UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Influence", meta=(AdvancedDisplay))
+    
+    UPROPERTY(BlueprintReadOnly, Transient, Category = "Influence", meta=(AdvancedDisplay))
     float LineOfSightOffset;
     
     FTCATInfluenceSource()

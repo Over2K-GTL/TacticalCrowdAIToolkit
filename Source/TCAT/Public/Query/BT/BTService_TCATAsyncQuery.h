@@ -1,5 +1,4 @@
 ﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -9,7 +8,6 @@
 
 /**
  * Defines the type of query this Behavior Tree Service will perform.
- * (If this Enum is already defined in a shared header, you can remove it here)
  */
 UENUM(BlueprintType)
 enum class ETCATServiceQueryMode : uint8
@@ -57,17 +55,17 @@ protected:
     UPROPERTY(EditAnywhere, Category = "TCAT Main", meta = (DisplayPriority = 1))
     ETCATServiceQueryMode QueryMode;
 
-    /** The identifier for the influence map group to search (e.g., 'Ally', 'Enemy', 'Danger'). */
+    /** The specific Influence Map Layer to query (e.g., 'Ally', 'Enemy'). Must match a layer tag defined in TCAT Settings. */
     UPROPERTY(EditAnywhere, Category = "TCAT Main", meta = (DisplayPriority = 2))
     FName MapTag = "Default";
 
-    /** Radius of the search area around the Center Location. Hidden if sampling a single position. */
+    /** Radius (in cm) of the search area around the Center Location. Hidden if sampling a single position. */
     UPROPERTY(EditAnywhere, Category = "TCAT Main", meta = (EditCondition = "QueryMode != ETCATServiceQueryMode::SamplePosition", EditConditionHides, DisplayPriority = 3))
     float SearchRadius = 500.0f;
     
     /** 
      * [Gradient Mode Only] 
-     * Distance to project the look-ahead point based on the influence slope.
+     * Distance (in cm) to project the look-ahead point based on the influence slope.
      * - If > 0: Returns a Location (Center + GradientDir * Dist).
      * - If 0: Returns the normalized Direction vector.
      */
@@ -78,22 +76,22 @@ protected:
     // [Blackboard Keys]
     // =================================================================
 
-    /** The center location for the search (e.g., SelfActor, TargetActor). */
+    /** [Input] The center location for the search (e.g., SelfActor, TargetActor). */
     UPROPERTY(EditAnywhere, Category = "TCAT Blackboard")
     FBlackboardKeySelector CenterLocationKey;
 
     /** 
-     * Where to store the resulting world position. 
+     * [Output] Where to store the resulting world position. 
      * Used for Highest/Lowest/Gradient queries.
      */
     UPROPERTY(EditAnywhere, Category = "TCAT Blackboard", meta = (EditCondition = "QueryMode != ETCATServiceQueryMode::ConditionCheck", EditConditionHides))
     FBlackboardKeySelector ResultLocationKey;
 
-    /** (Optional) Where to store the raw influence value (score) found at the result location. */
+    /** [Output] (Optional) Where to store the raw influence value (score) found at the result location. */
     UPROPERTY(EditAnywhere, Category = "TCAT Blackboard")
     FBlackboardKeySelector ResultValueKey;
 
-    /** [Condition Mode Only] Where to store the boolean result (True if condition met, else False). */
+    /** [Output] [Condition Mode Only] Where to store the boolean result (True if condition met, else False). */
     UPROPERTY(EditAnywhere, Category = "TCAT Blackboard", meta = (EditCondition = "QueryMode == ETCATServiceQueryMode::ConditionCheck", EditConditionHides))
     FBlackboardKeySelector ResultBoolKey;
 
@@ -127,24 +125,28 @@ protected:
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
     bool bSubtractSelfInfluence = false;
 
-    /** [Expensive] If true, verifies if the candidate location is reachable via NavMesh. */
+    /** [Expensive] If true, validates whether the candidate location is reachable on the NavMesh. */
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
     bool bExcludeUnreachableLocation = false;
 
-    /** [Expensive] If true, verifies if the candidate location has Line of Sight from the center. */
+    /** [Expensive] If true, validates Line of Sight from the center to the candidate location. */
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
     bool bTraceVisibility = false;
 
     /** 
-     * If true, if you want 2D-only logic 
-     * Disabled, snaps the Z-height to the TCAT baked height map for better accuracy.
+     * If true, ignores the TCAT height map and uses 2D distance/logic. 
+     * Recommended: False (Use cached height map for accuracy).
      */
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
     bool bIgnoreZValue = false;
 
-    /** If true, applies a deterministic jitter so equal scores stay unique. */
+    /** If true, applies a deterministic jitter so identical scores stay unique (prevents AI stacking). */
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
     bool bUseRandomizedTiebreaker = true;
+
+    /** Enables Visual Logger debug drawing for this query. */
+    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
+    bool bDebugQuery = false;
 
     /**
      * Applies a distance-based bias to the score.
@@ -182,4 +184,3 @@ private:
     /** Flag to prevent multiple queries from stacking if Tick is faster than Query. */
     bool bIsQuerying = false;
 };
-

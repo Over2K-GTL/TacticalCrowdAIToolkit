@@ -32,7 +32,7 @@ void FTCATHeightMapModule::Bake(ATCATInfluenceVolume* Owner, float CellSize, FIn
 	}
 
 	// Fill CPU Grid : Get reference to owner's HeightResource 
-	FTCATGridResource& HeightResource = Owner->HeightResource;
+	FTCATHeightMapResource& HeightResource = Owner->HeightResource;
 	HeightResource.Resize(Resolution.Y, Resolution.X, Owner, TEXT("HeightBake"));
 
 	PerformLineTraces(Owner, Bounds, CellSize, Resolution, HeightResource);

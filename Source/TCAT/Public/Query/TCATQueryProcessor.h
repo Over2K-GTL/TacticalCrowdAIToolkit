@@ -1,4 +1,4 @@
-﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
+// Copyright 2025-2026 Over2K. All Rights Reserved.
 
 #pragma once
 #include "CoreMinimal.h"
@@ -15,24 +15,32 @@ struct FTCATSearchCandidate
 /**
  * Handles batch processing of influence map queries.
  * Optimized for cache locality and multi-threaded execution.
+ * 
+ * This processor manages a queue of async queries and executes them during the Subsystem Tick.
+ * It automatically switches between Single-Threaded and Parallel execution based on the workload.
  */
 struct TCAT_API FTCATQueryProcessor
 {
 public:
 	/**
-	 * Bind required data sources from the Subsystem.
-	 * @param InWorld - World
-	 * @param InVolumesPtr - Pointer to the map-grouped volume registry in UTCATSubsystem.
+	 * Initializes the query processor and binds it to the world data.
+	 * @param InWorld      The world context for debug drawing and spatial queries.
+	 * @param InVolumesPtr Pointer to the map-grouped volume registry in UTCATSubsystem.
+	 *                     This pointer must remain valid for the lifetime of the processor.
 	 */
 	void Initialize(UWorld* InWorld, const TMap<FName, TSet<class ATCATInfluenceVolume*>>* InVolumesPtr);
 
-	/** Unregisters the tick function to prevent memory leaks or crashes. */
+	/** 
+	 * Cleans up resources and unregisters the tick function.
+	 * Must be called before the subsystem is destroyed to prevent crashes.
+	 */
 	void Shutdown();
 	
 	/**
 	 * Adds a new search query to the batch processing queue.
-	 * The query will be processed in the next subsystem tick using parallel execution.
-	 * @param NewQuery - The query data to be added. Passed as an R-value reference (via MoveTemp) to avoid unnecessary memory copying.
+	 * The query will be processed in the next subsystem tick.
+	 * 
+	 * @param NewQuery The query data to be added. Passed as an R-value reference (via MoveTemp) to avoid unnecessary memory copying.
 	 * @return A unique Query ID (Handle). This ID is required if you wish to cancel the query later via CancelQuery().
 	 */
 	uint32 EnqueueQuery(FTCATBatchQuery&& NewQuery);
@@ -40,22 +48,28 @@ public:
 	/**
 	 * Attempts to cancel a pending query using its specific Handle ID.
 	 * If the query is found in the waiting queue, it will be marked as cancelled and its result callback will not be broadcast.
-	 * @param QueryID - The unique handle returned by EnqueueQuery.
+	 * 
+	 * @param QueryID The unique handle returned by EnqueueQuery.
 	 */
 	void CancelQuery(uint32 QueryID);
 
 	/**
-	 * Process all queued queries.
-	 * Decides between sequential and parallel execution based on estimated computational cost.
+	 * Processes all queued queries for the current frame.
+	 * 
+	 * Execution Strategy:
+	 * - If the number of queries is small, they are processed sequentially on the Game Thread to avoid task overhead.
+	 * - If the load is high, queries are distributed across background threads using ParallelFor.
+	 * 
+	 * After processing, results are dispatched to the Game Thread listeners.
 	 */
 	void ExecuteBatch();
 
 private:
-	/** Core logic for a single query execution. Thread-safe. */
+	/** Core logic for a single query execution. Designed to be Thread-safe. */
 	void ProcessSingleQuery(FTCATBatchQuery& Q);
 
 	/** Triggers completion callbacks on the Game Thread. */
-	void DispatchResults(TArray<FTCATBatchQuery>& ResultQueue);
+	void DispatchResults(TArray<FTCATBatchQuery>& ResultQueue, int32 DebugMode, const FString& DebugFilter);
 
 private:
 	// ================================================
@@ -97,6 +111,7 @@ private:
 #if ENABLE_VISUAL_LOG
 	void VLogQueryDetails(const struct FTCATBatchQuery& Query) const;
 	void VLogQueryDetails(const struct FTCATQueryContext& Context, const struct FTCATBatchQuery& Query) const;
+	bool ShouldDrawQueryDebug(const FTCATBatchQuery& Query, int32 DebugMode, const FString& DebugFilter) const;
 #endif
 	// ================================================
 	// Member Variables

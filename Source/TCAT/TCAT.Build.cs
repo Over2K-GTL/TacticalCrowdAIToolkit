@@ -11,22 +11,8 @@ public class TCAT : ModuleRules
 		
 		IWYUSupport = IWYUSupport.Full;
 		bLegacyPublicIncludePaths = false;
-		
+
 		bUseUnity = true;
-		
-		PublicIncludePaths.AddRange(
-			new string[] {
-				// ... add public include paths required here ...
-			}
-			);
-				
-		
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				// ... add other private include paths required here ...
-			}
-			);
-			
 		
 		PublicDependencyModuleNames.AddRange(
 			new string[]
@@ -40,7 +26,6 @@ public class TCAT : ModuleRules
 				"AIModule",
             }
 			);
-			
 		
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
@@ -50,14 +35,6 @@ public class TCAT : ModuleRules
 				"Renderer",
 				"Slate",
 				"SlateCore",
-			}
-			);
-		
-		
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[]
-			{
-				// ... add any modules that your module loads dynamically here ...
 			}
 			);
 

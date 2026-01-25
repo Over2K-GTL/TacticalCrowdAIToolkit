@@ -12,15 +12,9 @@ TArray<UTCATAsyncMultiSearchAction*> UTCATAsyncMultiSearchAction::ActionPool;
 
 bool UTCATAsyncMultiSearchAction::TryResolveQueryCenter(FVector& OutCenter) const
 {
-	if (bUseWorldPosOverride)
+    if (TargetComponent.IsValid())
 	{
-		OutCenter = WorldPosOverride;
-		return true;
-	}
-
-	if (TargetComponent.IsValid())
-	{
-		OutCenter = TargetComponent->ResolveWorldLocation();
+		OutCenter = TargetComponent->ResolveWorldLocation() +  WorldPosOffset;
 		return true;
 	}
 
@@ -31,7 +25,7 @@ bool UTCATAsyncMultiSearchAction::TryResolveQueryCenter(FVector& OutCenter) cons
 
 	if (const AActor* SourceActor = Cast<AActor>(WorldContext))
 	{
-		OutCenter = SourceActor->GetActorLocation();
+		OutCenter = SourceActor->GetActorLocation() +  WorldPosOffset;
 		return true;
 	}
 
@@ -39,7 +33,7 @@ bool UTCATAsyncMultiSearchAction::TryResolveQueryCenter(FVector& OutCenter) cons
 	{
 		if (const AActor* Owner = SourceActorComponent->GetOwner())
 		{
-			OutCenter = Owner->GetActorLocation();
+			OutCenter = Owner->GetActorLocation() +  WorldPosOffset;
 			return true;
 		}
 	}
@@ -49,8 +43,8 @@ bool UTCATAsyncMultiSearchAction::TryResolveQueryCenter(FVector& OutCenter) cons
 
 UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchHighestValues(UObject* WorldContextObject,
     FName MapTag, UTCATInfluenceComponent* SourceComponent, float SearchRadius, int32 MaxResults,
-    bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker,
-    ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float InfluenceHalfHeightOverride, bool bUseWorldPosOverride, const FVector& WorldPosToQueryOverride)
+    bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker, bool bDebug,
+    ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float InfluenceHalfHeightOverride, const FVector& WorldPosToQueryOverride)
 {
     UTCATAsyncMultiSearchAction* Action = GetOrCreateAction(WorldContextObject);
 
@@ -67,12 +61,13 @@ UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchHighestValues(UO
     Action->bTraceVisibility = bTraceVisibility;
     Action->bIgnoreZValue = bIgnoreZValue;
     Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+    Action->bDebugQuery = bDebug;
+
 
     Action->DistanceBiasType = DistanceBiasType;
     Action->DistanceBiasWeight = DistanceBiasWeight;
     Action->HalfHeightOverride = InfluenceHalfHeightOverride;
-    Action->WorldPosOverride = WorldPosToQueryOverride;
-    Action->bUseWorldPosOverride = bUseWorldPosOverride;
+    Action-> WorldPosOffset = WorldPosToQueryOverride;
 
     Action->SelectedQueryType = ETCATQueryType::HighestValue;
 
@@ -81,8 +76,8 @@ UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchHighestValues(UO
 
 UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchLowestValues(UObject* WorldContextObject,
     FName MapTag, UTCATInfluenceComponent* SourceComponent, float SearchRadius, int32 MaxResults,
-    bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker,
-    ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float InfluenceHalfHeightOverride, bool bUseWorldPosOverride, const FVector& WorldPosToQueryOverride)
+    bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker, bool bDebug,
+    ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float InfluenceHalfHeightOverride, const FVector& WorldPosToQueryOverride)
 {
     UTCATAsyncMultiSearchAction* Action = GetOrCreateAction(WorldContextObject);
 
@@ -99,12 +94,13 @@ UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchLowestValues(UOb
     Action->bTraceVisibility = bTraceVisibility;
     Action->bIgnoreZValue = bIgnoreZValue;
     Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+    Action->bDebugQuery = bDebug;
 
     Action->DistanceBiasType = DistanceBiasType;
     Action->DistanceBiasWeight = DistanceBiasWeight;
     Action->HalfHeightOverride = InfluenceHalfHeightOverride;
-    Action->WorldPosOverride = WorldPosToQueryOverride;
-    Action->bUseWorldPosOverride = bUseWorldPosOverride;
+    Action-> WorldPosOffset = WorldPosToQueryOverride;
+    
 
     Action->SelectedQueryType = ETCATQueryType::LowestValue;
 
@@ -113,8 +109,8 @@ UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchLowestValues(UOb
 
 UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchHighestValuesInCondition(UObject* WorldContextObject,
     FName MapTag, UTCATInfluenceComponent* SourceComponent, float SearchRadius, float CompareValue, ETCATCompareType CompareType, int32 MaxResults,
-    bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker,
-    ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float InfluenceHalfHeightOverride, bool bUseWorldPosOverride, const FVector& WorldPosToQueryOverride)
+    bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker, bool bDebug,
+    ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float InfluenceHalfHeightOverride, const FVector& WorldPosToQueryOverride)
 {
     UTCATAsyncMultiSearchAction* Action = GetOrCreateAction(WorldContextObject);
 
@@ -131,12 +127,13 @@ UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchHighestValuesInC
     Action->bTraceVisibility = bTraceVisibility;
     Action->bIgnoreZValue = bIgnoreZValue;
     Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+    Action->bDebugQuery = bDebug;
 
     Action->DistanceBiasType = DistanceBiasType;
     Action->DistanceBiasWeight = DistanceBiasWeight;
     Action->HalfHeightOverride = InfluenceHalfHeightOverride;
-    Action->WorldPosOverride = WorldPosToQueryOverride;
-    Action->bUseWorldPosOverride = bUseWorldPosOverride;
+    Action-> WorldPosOffset = WorldPosToQueryOverride;
+    
 
     Action->SelectedQueryType = ETCATQueryType::HighestValueInCondition;
 
@@ -145,8 +142,8 @@ UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchHighestValuesInC
 
 UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchLowestValuesInCondition(UObject* WorldContextObject,
     FName MapTag, UTCATInfluenceComponent* SourceComponent, float SearchRadius, float CompareValue, ETCATCompareType CompareType, int32 MaxResults,
-    bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker,
-    ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float InfluenceHalfHeightOverride, bool bUseWorldPosOverride, const FVector& WorldPosToQueryOverride)
+    bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker, bool bDebug,
+    ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float InfluenceHalfHeightOverride, const FVector& WorldPosToQueryOverride)
 {
     UTCATAsyncMultiSearchAction* Action = GetOrCreateAction(WorldContextObject);
 
@@ -163,12 +160,13 @@ UTCATAsyncMultiSearchAction* UTCATAsyncMultiSearchAction::SearchLowestValuesInCo
     Action->bTraceVisibility = bTraceVisibility;
     Action->bIgnoreZValue = bIgnoreZValue;
     Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+    Action->bDebugQuery = bDebug;
 
     Action->DistanceBiasType = DistanceBiasType;
     Action->DistanceBiasWeight = DistanceBiasWeight;
     Action->HalfHeightOverride = InfluenceHalfHeightOverride;
-    Action->WorldPosOverride = WorldPosToQueryOverride;
-    Action->bUseWorldPosOverride = bUseWorldPosOverride;
+    Action-> WorldPosOffset = WorldPosToQueryOverride;
+    
 
     Action->SelectedQueryType = ETCATQueryType::LowestValueInCondition;
 
@@ -192,23 +190,25 @@ void UTCATAsyncMultiSearchAction::Activate()
         return;
     }
 
-    if (!TargetComponent.IsValid())
+    AActor* DebugActor = Cast<AActor>(WorldContext);
+    if (!DebugActor)
     {
-        AActor* SearchActor = Cast<AActor>(WorldContext);
-        if (!SearchActor)
+        if (const UActorComponent* ContextComp = Cast<UActorComponent>(WorldContext))
         {
-            if (const UActorComponent* ContextComponent = Cast<UActorComponent>(WorldContext))
-            {
-                SearchActor = ContextComponent->GetOwner();
-            }
-        }
-
-        if (SearchActor)
-        {
-            TargetComponent = SearchActor->FindComponentByClass<UTCATInfluenceComponent>();
+            DebugActor = ContextComp->GetOwner();
         }
     }
-
+    
+    if (!TargetComponent.IsValid() && DebugActor)
+    {
+        TargetComponent = DebugActor->FindComponentByClass<UTCATInfluenceComponent>();
+    }
+    
+    if (!DebugActor && TargetComponent.IsValid())
+    {
+        DebugActor = TargetComponent->GetOwner();
+    }
+    
     FVector FinalCenter;
     if (!TryResolveQueryCenter(FinalCenter))
     {
@@ -249,6 +249,11 @@ void UTCATAsyncMultiSearchAction::Activate()
     Query.bTraceVisibility = bTraceVisibility;
     Query.bIgnoreZValue = bIgnoreZValue;
     Query.bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+    
+#if ENABLE_VISUAL_LOG
+    Query.DebugInfo.DebugOwner = DebugActor;
+    Query.DebugInfo.bEnabled = bDebugQuery;
+#endif
 
     Query.DistanceBiasType = DistanceBiasType;
     Query.DistanceBiasWeight = DistanceBiasWeight;
@@ -289,13 +294,6 @@ void UTCATAsyncMultiSearchAction::Activate()
 
         FinishAndRelease();
     };
-
-#if ENABLE_VISUAL_LOG
-    if (TargetComponent.IsValid())
-    {
-        TargetComponent->ApplyQueryDebugSettings(Query);
-    }
-#endif
 
     Subsystem->RequestBatchQuery(MoveTemp(Query));
 }
@@ -339,8 +337,7 @@ void UTCATAsyncMultiSearchAction::FinishAndRelease()
     
     CachedResults.Reset();
     TargetComponent.Reset();
-    WorldPosOverride = FVector::ZeroVector;
-    bUseWorldPosOverride = false;
+     WorldPosOffset = FVector::ZeroVector;
     
     ActionPool.Add(this);
 }

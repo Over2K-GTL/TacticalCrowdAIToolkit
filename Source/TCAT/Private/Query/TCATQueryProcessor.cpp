@@ -1,6 +1,4 @@
 ﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
-
-
 #include "Query/TCATQueryProcessor.h"
 #include "NavigationSystem.h"
 #include "TCAT.h"
@@ -27,8 +25,20 @@ static TAutoConsoleVariable<int32> CVarTCATQueryLogStride(
 
 static TAutoConsoleVariable<float> CVarTCATQueryTextOffset(
 	TEXT("TCAT.Debug.QueryTextOffset"),
-	30.0f,
+	10.0f,
 	TEXT("Z offset applied to Visual Logger text while drawing queries."),
+	ECVF_Cheat);
+
+static TAutoConsoleVariable<int32> CVarTCATQueryDebugMode(
+	TEXT("TCAT.Debug.QueryMode"),
+	0,
+	TEXT("0 = Disabled, 1 = Selected actor only, 2 = All queries"),
+	ECVF_Cheat);
+
+static TAutoConsoleVariable<FString> CVarTCATQueryDebugActor(
+	TEXT("TCAT.Debug.QueryActor"),
+	TEXT(""),
+	TEXT("Actor name filter used when TCAT.Debug.QueryMode == 1"),
 	ECVF_Cheat);
 
 namespace ETCATContextFlags
@@ -68,6 +78,7 @@ struct FTCATQueryContext
     uint8 bIgnoreZValue : 1;
     uint8 bExcludeUnreachableLocation : 1;
     uint8 bTraceVisibility : 1;
+    uint8 bUseRandomizedTiebreaker : 1;
     uint8 ContextFlags = 0;
 
     ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None;
@@ -88,6 +99,7 @@ struct FTCATQueryContext
         , bIgnoreZValue(InQuery.bIgnoreZValue)
         , bExcludeUnreachableLocation(InQuery.bExcludeUnreachableLocation)
         , bTraceVisibility(InQuery.bTraceVisibility)
+        , bUseRandomizedTiebreaker(InQuery.bUseRandomizedTiebreaker)
         , DistanceBiasType(InQuery.DistanceBiasType)
         , DistanceBiasWeight(InQuery.DistanceBiasWeight)
     {
@@ -148,15 +160,30 @@ void FTCATQueryProcessor::CancelQuery(uint32 QueryID)
 // ============================================================
 // Batch
 // ============================================================
-void FTCATQueryProcessor::DispatchResults(TArray<FTCATBatchQuery>& ResultQueue)
+void FTCATQueryProcessor::DispatchResults(TArray<FTCATBatchQuery>& ResultQueue, int32 DebugMode, const FString& DebugFilter)
 {
     for (FTCATBatchQuery& Query : ResultQueue)
     {
 #if ENABLE_VISUAL_LOG
-		if (Query.DebugInfo.IsValid())
-		{
-			VLogQueryDetails(Query);
-		}
+        if (DebugMode > 0) 
+        {
+            if (ShouldDrawQueryDebug(Query, DebugMode, DebugFilter))
+            {
+                if (Query.DebugInfo.SampleStride <= 0) 
+                    Query.DebugInfo.SampleStride = CVarTCATQueryLogStride.GetValueOnGameThread();
+                
+                if (Query.DebugInfo.HeightOffset <= 0.0f)
+                    Query.DebugInfo.HeightOffset = CVarTCATQueryTextOffset.GetValueOnGameThread();
+                
+                if (Query.DebugInfo.BaseColor == FLinearColor::White)
+                {
+                    Query.DebugInfo.BaseColor = FLinearColor::Green; 
+                }
+
+                // VLog
+                VLogQueryDetails(Query);
+            }
+        }
 #endif
         if (Query.OnComplete)
         {
@@ -170,6 +197,9 @@ void FTCATQueryProcessor::ExecuteBatch()
     TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_QueryExecuteBatch);
     SCOPE_CYCLE_COUNTER(STAT_TCAT_QueryExecuteBatch);
     SET_DWORD_STAT(STAT_TCAT_QueryCount, QueryQueue.Num());
+
+    const int32 DebugMode = CVarTCATQueryDebugMode.GetValueOnGameThread();
+    const FString DebugActorFilter = CVarTCATQueryDebugActor.GetValueOnGameThread();
     
     if (QueryQueue.Num() == 0)
     {
@@ -192,15 +222,14 @@ void FTCATQueryProcessor::ExecuteBatch()
         TArray<FTCATBatchQuery> WorkingQueue = MoveTemp(QueryQueue);
         QueryQueue.Reset();
 
-        DispatchResults(WorkingQueue);
+        DispatchResults(WorkingQueue, DebugMode, DebugActorFilter);
     }
 }
 
 void FTCATQueryProcessor::ProcessSingleQuery(FTCATBatchQuery& Query)
 {
     Query.OutResults.Reset();
-
-    // [Refactoring] Create Context Wrapper (Stack Allocation, Zero Cost)
+    
     FTCATQueryContext Context(Query);
 
     switch (Query.Type)
@@ -650,12 +679,13 @@ FVector FTCATQueryProcessor::GetGradientInternal(const FTCATQueryContext& Contex
 
     FVector HighestPos = Context.Center;
     float HighestValue = -FLT_MAX;
+
+    float CenterValue = -FLT_MAX;
+    bool bFoundCenter = false;
     
     ForEachCellInCircle(Context,
     [&](float RawValue, const ATCATInfluenceVolume* Volume, int32 GridX, int32 GridY) -> bool
     {
-        if (!Volume) return false;
-
         // Calculate world position
         const float CellSize = Volume->GetCellSize();
         FVector CellWorldPos = Volume->GetGridOrigin();
@@ -663,12 +693,22 @@ FVector FTCATQueryProcessor::GetGradientInternal(const FTCATQueryContext& Contex
         CellWorldPos.Y += (GridY * CellSize) + (CellSize * 0.5f);
         CellWorldPos.Z = Context.bIgnoreZValue ? Context.Center.Z : Volume->GetGridHeightIndex({GridX, GridY});
 
+        if (Context.bExcludeUnreachableLocation && !IsPositionReachable(Context.Center, CellWorldPos)) {return false;}
         float FinalValue = RawValue;
         if (Context.ContextFlags & ETCATContextFlags::HasSelfInfluence)
         {
             float Dist = FVector::Dist(CellWorldPos, Context.Center);
             float CurveVal = CalculateSelfInfluence(*Context.Curve, Dist, Context.InfluenceRadius);
             FinalValue -= (CurveVal * Context.SelfRemovalFactor);
+        }
+
+        if (!bFoundCenter)
+        {
+             if (FVector::DistSquared(CellWorldPos, Context.Center) < (CellSize * CellSize * 0.25f))
+             {
+                 CenterValue = FinalValue;
+                 bFoundCenter = true;
+             }
         }
 
         const FVector Direction = (CellWorldPos - Context.Center).GetSafeNormal();
@@ -683,6 +723,11 @@ FVector FTCATQueryProcessor::GetGradientInternal(const FTCATQueryContext& Contex
         return false;
     });
 
+    if (bFoundCenter && (HighestValue - CenterValue) <= 0.01f)
+    {
+        return FVector::ZeroVector;
+    }
+    
     FVector FinalDirection;
     if (GradientVector.SizeSquared() < GRADIENT_FALLBACK_THRESHOLDSQ && TotalWeight > 0.0f)
     {
@@ -695,7 +740,21 @@ FVector FTCATQueryProcessor::GetGradientInternal(const FTCATQueryContext& Contex
 
     if (FMath::Abs(LookAheadDistance) > UE_KINDA_SMALL_NUMBER)
     {
-        return Context.Center + (FinalDirection * LookAheadDistance);
+        const FVector TargetPos = Context.Center + (FinalDirection * LookAheadDistance);
+        
+        if (Context.bExcludeUnreachableLocation && CachedWorld)
+        {
+            if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(CachedWorld))
+            {
+                FVector HitLocation;
+                if (NavSys->NavigationRaycast(CachedWorld, Context.Center, TargetPos, HitLocation))
+                {
+                    return HitLocation;
+                }
+            }
+        }
+        
+        return TargetPos;
     }
     return FinalDirection;
 }
@@ -1096,13 +1155,60 @@ void FTCATQueryProcessor::VLogQueryDetails(const FTCATQueryContext& Context, con
             TEXT("Result %.2f"), Result.Value);
     }
 }
+
+bool FTCATQueryProcessor::ShouldDrawQueryDebug(const FTCATBatchQuery& Query, int32 DebugMode, const FString& DebugFilter) const
+{
+    if (!Query.DebugInfo.bEnabled)
+    {
+        return false;
+    }
+
+    if (!FVisualLogger::IsRecording())
+    {
+        return false;
+    }
+    
+    if (DebugMode == 2)
+    {
+        return true;
+    }
+    
+    if (DebugMode == 1)
+    {
+        const AActor* DebugActor = Query.DebugInfo.DebugOwner.Get();
+        if (!DebugActor) return false;
+        
+        if (!DebugFilter.IsEmpty())
+        {
+            return DebugActor->GetName().Contains(DebugFilter);
+        }
+
+#if WITH_EDITOR
+        if (DebugActor->IsSelected())
+        {
+            return true;
+        }
+#endif
+    }
+    return false;
+}
 #endif
 
 float FTCATQueryProcessor::CalculateModifiedValue(const FTCATQueryContext& Context, float RawValue, const FVector& CellWorldPos , int32 GridX, int32 GridY)
 {
-    if (!(Context.ContextFlags & ETCATContextFlags::NeedDistance)) return RawValue;
-
     float FinalValue = RawValue;
+    
+    if (Context.bUseRandomizedTiebreaker)
+    {
+        const float JitterScale = 0.0001f; 
+        const float Noise = UTCATMathLibrary::GetSpatialHash(GridX, GridY, Context.RandomSeed);
+        const float Sign = (Context.ContextFlags & ETCATContextFlags::IsLowestQuery) ? -1.0f : 1.0f;
+    
+        FinalValue += (Noise * JitterScale * Sign);    
+    }
+    
+    if (!(Context.ContextFlags & ETCATContextFlags::NeedDistance)) return FinalValue;
+    
     const float Dist = FVector::Dist(CellWorldPos, Context.Center);
 
     if (Context.ContextFlags & ETCATContextFlags::HasSelfInfluence)
@@ -1126,13 +1232,7 @@ float FTCATQueryProcessor::CalculateModifiedValue(const FTCATQueryContext& Conte
         const float Sign = (Context.ContextFlags & ETCATContextFlags::IsLowestQuery) ? -1.0f : 1.0f;
         FinalValue += (DistanceScore * Context.DistanceBiasWeight * Sign);
     }
-
-    // const float JitterScale = 0.0001f; 
-    // const float Noise = UTCATMathLibrary::GetSpatialHash(GridX, GridY, Context.RandomSeed);
-    // const float Sign = (Context.ContextFlags & ETCATContextFlags::IsLowestQuery) ? -1.0f : 1.0f;
-    //
-    // FinalValue += (Noise * JitterScale * Sign);
-
+        
     return FinalValue;
 }
 

@@ -1,6 +1,4 @@
 ﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
-
-
 #include "Query/BT/BTTask_TCATAsyncQuery.h"
 #include "TCAT.h"
 #include "BehaviorTree/BlackboardComponent.h"
@@ -173,9 +171,17 @@ EBTNodeResult::Type UBTTask_TCATAsyncQuery::ExecuteTask(UBehaviorTreeComponent& 
     NewQuery.bTraceVisibility = bTraceVisibility;
     NewQuery.bIgnoreZValue = bIgnoreZValue;
     NewQuery.bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
+
+#if ENABLE_VISUAL_LOG
+    NewQuery.DebugInfo.bEnabled = bDebugQuery;
+#endif
+    
     NewQuery.DistanceBiasType = DistanceBiasType;
     NewQuery.DistanceBiasWeight = DistanceBiasWeight;
 
+    NewQuery.RandomSeed = HashCombineFast(GetTypeHash(NewQuery.MapTag), GetTypeHash(NewQuery.Center));
+    NewQuery.RandomSeed = HashCombineFast(NewQuery.RandomSeed, (uint32)GFrameCounter);
+    
     float ResolvedHalfHeight = HalfHeightOverride;
     ATCATInfluenceVolume* Volume = TCAT->GetInfluenceVolume(MapTag);
     NewQuery.Curve = nullptr;

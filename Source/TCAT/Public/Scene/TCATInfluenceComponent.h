@@ -10,7 +10,6 @@
 class UTCATSubsystem;
 class ATCATInfluenceVolume;
 class UCurveFloat;
-struct FTCATBatchQuery;
 
 //~=============================================================================
 // Influence Configuration Structures
@@ -90,7 +89,7 @@ public:
 	 * * When 'Line Of Sight' is enabled, a ray is traced from [ComponentLocation + UpVector * HeightOffset] to the target cell.
 	 * Use this to prevent ground-based clutter (e.g., small rocks, fences) from blocking the unit's view.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TCAT|Advanced")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TCAT", AdvancedDisplay)
 	float LineOfSightOffset = 0.0f;
 	
     /** Checks if this component emits influence to the specified layer */
@@ -117,7 +116,8 @@ public:
     FORCEINLINE const TArray<FTCATInfluenceConfigEntry>& GetInfluenceLayers() const { return InfluenceLayerMap; }
 
 	FORCEINLINE float GetPositionErrorTolerance() const { return PositionErrorTolerance; }
-    /** 
+
+	/** 
      * Rebuilds the runtime source map from editor configuration.
      * Call this after modifying InfluenceLayerMap at runtime.
      */
@@ -199,31 +199,6 @@ public:
      * Called automatically when volume changes in GetSelfInfluenceResult().
      */
     void UpdateCachedRecipes(const ATCATInfluenceVolume* Volume) const;
-
-//~=============================================================================
-// Debug - Visual Logger
-//~=============================================================================
-
-#if ENABLE_VISUAL_LOG
-    /** 
-     * Applies debug visualization settings to a query.
-     * Generates unique colors per component and staggers query layers vertically.
-     */
-    void ApplyQueryDebugSettings(struct FTCATBatchQuery& Query) const;
-#endif
-
-    /** Enable/disable query debugging for this component */
-    UPROPERTY(EditAnywhere, Category = "TCAT|Debug")
-    bool bDebugMyQueries = false;
-
-    /** Vertical spacing between stacked debug query visualizations */
-    UPROPERTY(EditAnywhere, Category = "TCAT|Debug", meta=(ClampMin="0.0", UIMin="0.0"))
-    float DebugQueryHeightStep = 40.0f;
-
-    /** Sample stride for debug visualization (1 = all samples, 2 = every other, etc.) */
-    UPROPERTY(EditAnywhere, Category = "TCAT|Debug", meta=(ClampMin="1", UIMin="1"))
-    int32 DebugQueryStride = 2;
-
 //~=============================================================================
 // Component Lifecycle
 //~=============================================================================
@@ -278,7 +253,7 @@ protected:
     * the influence of that component is updated once more on the CPU.
     * If this value is too small, the frequency of updates to the CPU increases, which may degrade performance.
     */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TCAT")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TCAT", AdvancedDisplay)
     float PositionErrorTolerance = 1000.0f;
 
 //~=============================================================================
@@ -319,18 +294,6 @@ private:
 //~=============================================================================
 // Internal - Debug Helpers
 //~=============================================================================
-
-#if ENABLE_VISUAL_LOG
-    /** Frame number of last debug query (for layer counter reset) */
-    mutable uint64 LastDebugQueryFrame = 0;
-    
-    /** Counter for stacking debug query visualizations */
-    mutable int32 DebugQueryCounter = 0;
-    
-    /** Returns next debug layer index and increments counter */
-    int32 GetNextDebugQueryLayer() const;
-#endif
-
     /** Logs influence sources to visual logger (spheres + arrows for velocity/acceleration) */
     void VLogInfluence() const;
 
