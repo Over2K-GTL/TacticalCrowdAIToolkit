@@ -1,4 +1,4 @@
-// Copyright 2025-2026 Over2K. All Rights Reserved.
+﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
 
 #pragma once
 #include "CoreMinimal.h"
@@ -12,12 +12,17 @@ struct FTCATSearchCandidate
 	FVector WorldPos;
 };
 
-/**
- * Handles batch processing of influence map queries.
- * Optimized for cache locality and multi-threaded execution.
- * 
- * This processor manages a queue of async queries and executes them during the Subsystem Tick.
- * It automatically switches between Single-Threaded and Parallel execution based on the workload.
+ /**
+ * Batch executor for TCAT influence queries.
+ *
+ * When to use:
+ * - You have many AI agents requesting "best/worst spot" or "is there any safe point" every frame.
+ * - You want to centralize expensive filters (NavMesh reachability / LoS) and keep caller logic thin.
+ *
+ * How it runs:
+ * - Call EnqueueQuery() from gameplay/BT/async actions.
+ * - ExecuteBatch() is called by the subsystem tick (FTCATBatchTickFunction).
+ * - Results are dispatched back on the Game Thread via the query's OnComplete.
  */
 struct TCAT_API FTCATQueryProcessor
 {
@@ -29,6 +34,12 @@ public:
 	 *                     This pointer must remain valid for the lifetime of the processor.
 	 */
 	void Initialize(UWorld* InWorld, const TMap<FName, TSet<class ATCATInfluenceVolume*>>* InVolumesPtr);
+	
+	/**
+	 * Provides the baked curve atlas (LUT) for fast sampling.
+	 * If not set, queries can still sample raw UCurveFloat assets (slower and not deterministic in shipping builds).
+	 */
+	void SetCurveAtlasData(const TArray<float>* InAtlasData, int32 InAtlasWidth);
 
 	/** 
 	 * Cleans up resources and unregisters the tick function.
@@ -64,12 +75,13 @@ public:
 	 */
 	void ExecuteBatch();
 
+	void ProcessQueryImmediate(FTCATBatchQuery& InOutQuery);
 private:
 	/** Core logic for a single query execution. Designed to be Thread-safe. */
 	void ProcessSingleQuery(FTCATBatchQuery& Q);
 
 	/** Triggers completion callbacks on the Game Thread. */
-	void DispatchResults(TArray<FTCATBatchQuery>& ResultQueue, int32 DebugMode, const FString& DebugFilter);
+	void DispatchResults(TArray<FTCATBatchQuery>& ResultQueue);
 
 private:
 	// ================================================
@@ -77,41 +89,80 @@ private:
 	// ================================================
     bool SearchConditionInternal(const FTCATQueryContext& Context, FVector& OutPos) const;
     
-    float SearchHighestInternal(const FTCATQueryContext& Context, TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& OutResults) const;
+    float SearchHighestInternal(const FTCATQueryContext& Context, FTCATQueryResultArray& OutResults) const;
     
-    float SearchLowestInternal(const FTCATQueryContext& Context, TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& OutResults) const;
+    float SearchLowestInternal(const FTCATQueryContext& Context, FTCATQueryResultArray& OutResults) const;
 	
-    float SearchHighestInConditionInternal(const FTCATQueryContext& Context, TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& OutResults) const;
+    float SearchHighestInConditionInternal(const FTCATQueryContext& Context, FTCATQueryResultArray& OutResults) const;
     
-    float SearchLowestInConditionInternal(const FTCATQueryContext& Context, TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& OutResults) const;
+    float SearchLowestInConditionInternal(const FTCATQueryContext& Context, FTCATQueryResultArray& OutResults) const;
     
     float GetValueAtInternal(const FTCATQueryContext& Context) const;
-    
+
+	/**
+	 * Returns either:
+	 * - A normalized direction vector (when LookAheadDistance == 0),
+	 * - Or a target world position (when LookAheadDistance != 0).
+	 *
+	 * Typical usage: steer AI movement along improving influence rather than "teleport to best cell".
+	 */
     FVector GetGradientInternal(const FTCATQueryContext& Context, float LookAheadDistance) const;
 	
 	// ================================================
-	// Helper Func
+	// Helpers
 	// ================================================
 	void InsertTopKHighest(const FTCATSearchCandidate& Candidate, const int32 MaxCount, TArray<FTCATSearchCandidate, TInlineAllocator<CANDIDATE_HARDCAP>>& InOut) const;
 	void InsertTopKLowest(const FTCATSearchCandidate& Candidate, const int32 MaxCount, TArray<FTCATSearchCandidate, TInlineAllocator<CANDIDATE_HARDCAP>>& InOut) const;
-	
+
+	/**
+	 * Applies optional expensive filters (reachability / LoS) on a pre-sorted candidate list.
+	 * Designed to keep query scans cheap by delaying expensive checks until the end.
+	 */
 	void FindTopReachableCandidates(const FTCATQueryContext& Context, const TArray<FTCATSearchCandidate, TInlineAllocator<CANDIDATE_HARDCAP>>& Candidates, 
-		 TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& OutResults) const;
-    
+		 FTCATQueryResultArray& OutResults) const;
+
 	bool IsPositionReachable(const FVector& From, const FVector& To) const;
 	bool HasLineOfSight(const FVector& From, const FVector& To) const;
+
+	/** Heightfield/grid-based LoS. Use this when you want "terrain occlusion" without physics traces. */
 	bool CheckGridLineOfSight(const ATCATInfluenceVolume* Volume, const FVector& Start, const FVector& End) const; //Grid-based Line of Sight check.  
 
-	static float CalculateModifiedValue(const FTCATQueryContext& Context, float RawValue, const FVector& CellWorldPos, int32 GridX, int32 GridY);
-	static float CalculateSelfInfluence(const UCurveFloat& Curve, float Distance, float InfluenceRadius);
+	/**
+	 * Produces the final score used for ranking:
+	 * - Tie-break jitter
+	 * - Self influence removal if it's available
+	 * - Optional distance bias
+	 */
+	float CalculateModifiedValue(const FTCATQueryContext& Context, float RawValue, const FVector& CellWorldPos, int32 GridX, int32 GridY) const;
+
+	float EvaluateCurveValue(const UCurveFloat* Curve, int32 CurveIndex, float NormalizedDistance) const;
+	float SampleCurveAtlas(int32 CurveIndex, float NormalizedDistance) const;
+
+	/** Computes theoretical bounds for early rejection (used to avoid expensive work on hopeless cells). */
 	static void CalculatePotentialDelta(const UCurveFloat& Curve, float Factor, float& OutMaxAdd, float& OutMaxSub);
-	
+
+	/**
+	 * Iterates all grid cells inside a circle across relevant volumes.
+	 * The callback can early-stop by returning true.
+	 *
+	 * Performance note: keep ProcessCell cheap—this is the hot loop.
+	 */
 	void ForEachCellInCircle(const FTCATQueryContext& Context, TFunctionRef<bool(float, const ATCATInfluenceVolume*, int32, int32)> ProcessCell) const;
 
 #if ENABLE_VISUAL_LOG
 	void VLogQueryDetails(const struct FTCATBatchQuery& Query) const;
 	void VLogQueryDetails(const struct FTCATQueryContext& Context, const struct FTCATBatchQuery& Query) const;
-	bool ShouldDrawQueryDebug(const FTCATBatchQuery& Query, int32 DebugMode, const FString& DebugFilter) const;
+	void DrawPersistentDebug();
+
+	struct FQueryDebugFrame
+	{
+		TArray<FVector> CellPositions;
+		TArray<FColor> CellColors;
+		TArray<FString> CellTexts;
+		TArray<FVector> ResultPositions;
+		TArray<FString> ResultTexts;
+		double ExpireTime = 0.0;
+	};
 #endif
 	// ================================================
 	// Member Variables
@@ -126,4 +177,13 @@ private:
 		
 	/** Custom tick function instance owned by this processor. */
 	FTCATBatchTickFunction TickFunction{};
+
+	/** Cached curve atlas data used for fast LUT sampling. */
+	const TArray<float>* CurveAtlasData = nullptr;
+	int32 CurveAtlasWidth = 0;
+	int32 CurveAtlasRowCount = 0;
+
+#if ENABLE_VISUAL_LOG
+	mutable FQueryDebugFrame LastDebugFrame;
+#endif
 };

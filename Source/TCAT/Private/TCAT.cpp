@@ -1,10 +1,11 @@
-// Copyright 2025-2026 Over2K. All Rights Reserved.
+﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
 
 
 #include "TCAT.h"
 #include "ShaderCore.h"
 #include "Interfaces/IPluginManager.h"
 #include "Styling/SlateStyleRegistry.h"
+#include "Core/TCATSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "FTCATModule"
 
@@ -45,10 +46,19 @@ void FTCATModule::StartupModule()
 
 		FSlateStyleRegistry::RegisterSlateStyle(*StyleSet);
 	}
+
+	// Register console auto-complete entries
+	RegisteredStatCommandPreview = IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("stat TCAT"),
+		TEXT("Displays TCAT performance statistics and adaptive mode status"),
+		ECVF_Default
+	);
 }
 
 void FTCATModule::ShutdownModule()
 {
+	IConsoleManager::Get().UnregisterConsoleObject(RegisteredStatCommandPreview);
+
 	if (StyleSet.IsValid())
 	{
 		FSlateStyleRegistry::UnRegisterSlateStyle(*StyleSet);

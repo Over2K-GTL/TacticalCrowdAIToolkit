@@ -1,4 +1,4 @@
-// Copyright 2025-2026 Over2K. All Rights Reserved.
+﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
 
 #pragma once
 
@@ -7,7 +7,16 @@
 #include "EnvQueryTest_TCATInfluence.generated.h"
 
 /**
- * EQS Test to score or filter items based on TCAT Influence Map values.
+ * EQS Test: Scores and/or filters candidate items using TCAT Influence Map values.
+ *
+ * Typical usage in an EQS Query:
+ *  1) Generator creates candidate locations (e.g., TCAT Grid generator)
+ *  2) This test samples TCAT influence at each location
+ *  3) EQS uses the sampled value to score or filter items (Min/Max thresholds)
+ *
+ * Notes:
+ * - If MapTag is None or the target volume does not exist, the test does nothing.
+ * - Works on Vector items (locations).
  */
 UCLASS()
 class TCAT_API UEnvQueryTest_TCATInfluence : public UEnvQueryTest
@@ -22,12 +31,7 @@ public:
 	virtual FText GetDescriptionDetails() const override;
 
 protected:
-	// The influence layer tag to query (e.g., 'Enemy', 'Cover').
+	// The influence map tag to query (e.g., 'Enemy', 'Cover').
 	UPROPERTY(EditAnywhere, Category = "TCAT", meta = (GetOptions = "TCAT.TCATSettings.GetAllTagOptions"))
 	FName MapTag;
-
-	// If true, attempts to remove the Querier's own influence from the calculation.
-	// Useful when checking "Is this spot safe?" while standing in a "Danger" zone caused by yourself.
-	UPROPERTY(EditAnywhere, Category = "TCAT")
-	bool bSubtractSelfInfluence = false;
 };

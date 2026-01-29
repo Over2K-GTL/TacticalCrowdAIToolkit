@@ -9,7 +9,16 @@
 class UCurveFloat;
 class AActor;
 
-/** Defines the operation type for the influence map query. */
+/**
+ * Pick the smallest set that matches what you need:
+ * - Highest/Lowest: "give me the best/worst spot"
+ * - Condition: "is there any spot that satisfies a threshold?"
+ * - ValueAtPos: "sample the layer at a point"
+ * - Gradient: "which direction improves the score?"
+ *
+ * Note: some query types can be combined at a higher level (e.g., HighestValueInCondition),
+ * but the processor handles them as distinct paths for performance and clarity.
+ */
 enum class ETCATQueryType : uint8
 {
 	HighestValue,
@@ -36,57 +45,52 @@ struct FTCATSingleResult
 
 namespace TCATQueryConstants
 {
+	/**
+	 * Inline capacity for the typical "single-result" use case (MaxResults=1),
+	 * while still allowing small multi-result queries without heap allocations.
+	 */
 	static constexpr int32 INLINE_RESULT_CAPACITY = 8;
-	
+
+	/** Curve atlas samples per curve row (LUT). Must match bake settings. */
 	static constexpr int32 CURVE_SAMPLE_COUNT = 256;
 
-	// How many candidates to keep beyond MaxResults for reachability filtering.
+	/**
+	 * When reachability filtering is enabled, we keep extra candidates first,
+	 * then discard unreachable ones. This multiplier controls that oversampling.
+	 */
 	static constexpr int32 CANDIDATE_OVER_SAMPLEMULTIPLIER = 8;
 
-	// Hard cap to avoid pathological memory/cpu usage.
+	/** Hard cap to prevent worst-case spikes when users request huge result counts. */
 	static constexpr int32 CANDIDATE_HARDCAP = 128;
 
+	/** Small cutoff to ignore numerical noise / near-zero influence. */
 	static constexpr float MIN_INFLUENCE_THRESHOLD = 0.01f;
 
+	/**
+	 * If the accumulated gradient vector becomes too small (cancelling directions),
+	 * we fall back to "direction to the best cell" to avoid returning near-zero.
+	 */
 	static constexpr float GRADIENT_FALLBACK_THRESHOLDSQ = 0.05f;
-	
+
+	/**
+	 * Grid LoS trace step in cells.
+	 * Larger stride is faster but can miss thin obstacles in heightfield LoS mode.
+	 */
 	static constexpr int32 GRID_TRACE_STRIDE = 2;
 }
 
 using namespace  TCATQueryConstants;
 
-/** Defines how distance from the query center affects the scoring. */
-UENUM(BlueprintType)
-enum class ETCATDistanceBias : uint8
-{
-	/** Distance is ignored. Always returns a score of 1.0. */
-	None UMETA(DisplayName = "None (Ignore Distance)"),
-
-	/** [Formula: 1 - x]
-	 * Standard linear falloff.
-	 * * The score decreases evenly as the distance increases.
-	 * @usage Best for general movement costs, fuel consumption, or simple proximity checks.
-	 */
-	Linear UMETA(DisplayName = "Linear (Standard)"),
-
-	/** [Formula: 1 - x^2]
-	 * Influence stays strong for a long time, then drops rapidly near the max radius.
-	 * * The curve is convex (bulges outward). 
-	 * * Even at 50% distance, the score remains high (75%).
-	 * @usage Use for "Ranged Attacks" or "AoE Buffs". 
-	 * (e.g., A sniper is almost as accurate at mid-range as they are at close-range).
-	 */
-	SlowDecay UMETA(DisplayName = "Slow Decay (Maintains Strength)"), // User's "Relaxed"
-
-	/** [Formula: (1 - x)^2]
-	 * Influence drops significantly with even a slight increase in distance.
-	 * * The curve is concave (dips inward).
-	 * * At 50% distance, the score drops drastically to 25%.
-	 * @usage Use for "Melee Attacks", "Sense of Smell/Heat", or "Strict Safety Zones".
-	 * (e.g., Being slightly out of position is very dangerous).
-	 */
-	FastDecay UMETA(DisplayName = "Fast Decay (Drops Quickly)"), // User's "Focused"
-};
+/**
+ * Inline-allocated result container used by TCAT query callbacks.
+ *
+ * Why inline allocator?
+ * - Most queries request a small number of results (Top(1..N)).
+ * - Inline allocation avoids heap churn in hot AI/gameplay loops.
+ *
+ * You can treat it like a normal TArray for reading results.
+ */
+using FTCATQueryResultArray = TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>;
 
 #if ENABLE_VISUAL_LOG
 struct FTCATQueryDebugInfo
@@ -95,59 +99,79 @@ struct FTCATQueryDebugInfo
 	FLinearColor BaseColor = FLinearColor::Black;
 	float HeightOffset = 0.0f;
 	int32 SampleStride = 0;
-	bool bEnabled = false;
 
-	bool IsValid() const { return bEnabled && DebugOwner.IsValid(); }
+	bool IsValid() const
+	{
+#if WITH_EDITOR
+		const AActor* Owner = DebugOwner.Get();
+		return Owner && Owner->IsSelected();
+#else
+		return DebugOwner.IsValid();
+#endif
+	}
 };
 #endif
 
-/** Internal structure representing a queued query request. */
-struct FTCATBatchQuery
+/**
+ * Internal representation of a queued query request.
+ *
+ * This is the "wire format" between Blueprint/Gameplay callers and the batch processor.
+ * If you add a new option, prefer a single flag/value here so it stays batch-friendly.
+ */
+struct
+
+FTCATBatchQuery
 {
 	/** If true, this query has been cancelled and will be skipped. */
 	bool bIsCancelled = false;
 
-	// Basic Info
+	// Where to query
 	ETCATQueryType Type;
 	FName MapTag;
 	int32 MaxResults = 1;
 	uint32 RandomSeed = 0;
 
-	// Search Area
-	FVector Center;
+	// Where to query
+	FVector SearchCenter;
 	float SearchRadius;
 
 	// Condition (Optional)
 	float CompareValue;
 	ETCATCompareType CompareType;
 
-	// Source Info (for Self Influence Removal)
+	// Self influence removal (optional)
 	TWeakObjectPtr<UCurveFloat> Curve;
+	int32 SelfCurveID = INDEX_NONE;
 	float SelfRemovalFactor = 0.0f;
 	float InfluenceRadius = 0.0f;
-	float InfluenceHalfHeight = 0.0f;
+	FVector SelfOrigin = FVector::ZeroVector;
 
-	// Options
+	// Extra filters / scoring tweaks
+	bool bExcludeUnreachableLocation = false;	// NavMesh reachability filter.
+	bool bTraceVisibility = false;				// Heightfield/grid LoS filter.
 	bool bIgnoreZValue = false;
-	bool bExcludeUnreachableLocation = false;
-	bool bTraceVisibility = false;
-	bool bUseRandomizedTiebreaker = true;
 
-	ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None;
+	// Distance bias: add/subtract a curve score based on normalized distance to center.
+	// Useful to prefer "nearby decent" vs "far perfect", depending on the curve + weight.
+	TWeakObjectPtr<UCurveFloat> DistanceBiasCurve;
+	int32 DistanceBiasCurveID = INDEX_NONE;
 	float DistanceBiasWeight = 0.0f;
 	
 	/** Container for the final query results. */
-	TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>> OutResults;
+	FTCATQueryResultArray OutResults;
 	
 	/** Callback function executed on the Game Thread upon completion. */
-	TFunction<void(const TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>&)> OnComplete;
+	TFunction<void(const FTCATQueryResultArray&)> OnComplete;
 
 #if ENABLE_VISUAL_LOG
 	FTCATQueryDebugInfo DebugInfo;
 #endif
 };
 
-/** Custom tick function to execute query processing during the game update loop. */
+/**
+ * Custom tick function that lets the subsystem run query batches during the frame update loop.
+ * This is intentionally a separate FTickFunction so it can be registered/unregistered cleanly.
+ */
 struct FTCATBatchTickFunction : public FTickFunction
 {
 	struct FTCATQueryProcessor* Processor;

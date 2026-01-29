@@ -1,6 +1,12 @@
 // Copyright 2025-2026 Over2K. All Rights Reserved.
 
 #include "TCATLayerConfigCustomization.h"
+
+#include "Scene/TCATInfluenceVolume.h"
+#include "Simulation/TCATCompositeRecipe.h"
+#include "Core/TCATSettings.h"
+#include "Core/TCATTypes.h"
+
 #include "DetailWidgetRow.h"
 #include "IDetailChildrenBuilder.h"
 #include "Widgets/Input/SButton.h"
@@ -9,13 +15,28 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Core/TCATSettings.h"
 #include "Curves/CurveFloat.h"
 #include "PropertyCustomizationHelpers.h"
+#include "IDetailGroup.h"
 
 #define LOCTEXT_NAMESPACE "TCATLayerConfigCustomization"
+
+FTCATLayerConfigCustomization::FTCATLayerConfigCustomization()
+{
+	// Listen for property changes to refresh warnings if CompositeRecipe is modified externally
+	PropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &FTCATLayerConfigCustomization::HandleCompositeAssetPropertyChanged);
+}
+
+FTCATLayerConfigCustomization::~FTCATLayerConfigCustomization()
+{
+	if (PropertyChangedHandle.IsValid())
+	{
+		FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(PropertyChangedHandle);
+	}
+}
 
 TSharedRef<IPropertyTypeCustomization> FTCATLayerConfigCustomization::MakeInstance()
 {
@@ -113,6 +134,75 @@ void FTCATLayerConfigCustomization::CustomizeChildren(TSharedRef<IPropertyHandle
 					.OnShouldFilterAsset(this, &FTCATLayerConfigCustomization::OnShouldFilterCurveAsset)
 					.DisplayThumbnail(true) // Show Thumbnail!
 				];
+		}
+		// 3. Composite Recipe Asset Warning Logic
+		else if (PropName == GET_MEMBER_NAME_CHECKED(FTCATCompositeLayerConfig, CompositeRecipe))
+		{
+			CompositeAssetHandle = ChildHandle;
+			ChildBuilder.AddProperty(ChildHandle.ToSharedRef());
+
+			// Bind change delegate to update warnings immediately
+			CompositeAssetHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateRaw(this, &FTCATLayerConfigCustomization::OnCompositeAssetChanged));
+           
+			// Initialize state
+			OnCompositeAssetChanged();
+
+			// Add Warning Row below the property
+			ChildBuilder.AddCustomRow(LOCTEXT("SelfInfluenceWarningRow", "Self Influence Warning"))
+				.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateRaw(this, &FTCATLayerConfigCustomization::GetWarningVisibility)))
+				.WholeRowContent()
+				[
+					SNew(SBorder)
+					.Padding(FMargin(8.0f, 4.0f))
+					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder")) 
+					[
+						SNew(STextBlock)
+						.Text(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateRaw(this, &FTCATLayerConfigCustomization::GetWarningText)))
+						.TextStyle(FAppStyle::Get(), "NormalText")
+						.ColorAndOpacity(FAppStyle::Get().GetColor("ErrorReporting.WarningForegroundColor"))
+						.WrapTextAt(380.0f)
+					]
+				];
+		}
+		else if (PropName == FName("SourceData"))
+		{
+			uint32 NumSourceChildren;
+			ChildHandle->GetNumChildren(NumSourceChildren);
+
+			TArray<TSharedPtr<IPropertyHandle>> NormalProps;
+			TArray<TSharedPtr<IPropertyHandle>> AdvancedProps;
+
+			for (uint32 j = 0; j < NumSourceChildren; ++j)
+			{
+				TSharedPtr<IPropertyHandle> InnerProp = ChildHandle->GetChildHandle(j);
+				
+				if (InnerProp->GetProperty() && InnerProp->GetProperty()->HasMetaData(TEXT("AdvancedDisplay")))
+				{
+					AdvancedProps.Add(InnerProp);
+				}
+				else
+				{
+					NormalProps.Add(InnerProp);
+				}
+			}
+			
+			for (const auto& Prop : NormalProps)
+			{
+				ChildBuilder.AddProperty(Prop.ToSharedRef());
+			}
+			
+			if (AdvancedProps.Num() > 0)
+			{
+				IDetailGroup& AdvGroup = ChildBuilder.AddGroup(
+					FName("Advanced"), 
+					LOCTEXT("AdvancedGroup", "Advanced")
+				);
+
+				for (const auto& Prop : AdvancedProps)
+				{
+					AdvGroup.AddPropertyRow(Prop.ToSharedRef());
+				}
+			}
 		}
 		else
 		{
@@ -377,11 +467,99 @@ void FTCATLayerConfigCustomization::DeleteTag(const FString& TagName)
 
 bool FTCATLayerConfigCustomization::OnShouldFilterCurveAsset(const FAssetData& AssetData)
 {
-	// OnShouldFilterAsset: Return true to HIDE the asset, false to SHOW it.
+	const FString AssetPath = AssetData.PackagePath.ToString();
+	const FString TargetPath = TCATContentPaths::CuratedCurvePath;
 	
-	FString Path = AssetData.PackagePath.ToString();
-	// If path DOES NOT start with Target Path, Filter it (Hide it).
-	return !Path.StartsWith(TEXT("/TCAT/TCAT/Curves"));
+	return !AssetPath.StartsWith(TargetPath);
+}
+
+// ---------------------------------------------------------
+// Logic Asset Warning Logic
+// ---------------------------------------------------------
+
+void FTCATLayerConfigCustomization::OnCompositeAssetChanged()
+{
+    CachedCompositeAsset = nullptr;
+
+    if (CompositeAssetHandle.IsValid())
+    {
+        UObject* AssetObj = nullptr;
+        if (CompositeAssetHandle->GetValue(AssetObj) == FPropertyAccess::Success)
+        {
+            CachedCompositeAsset = Cast<UTCATCompositeRecipe>(AssetObj);
+        }
+    }
+
+    bWarningsDirty = true;
+}
+
+void FTCATLayerConfigCustomization::HandleCompositeAssetPropertyChanged(UObject* Object, FPropertyChangedEvent& PropertyChangedEvent)
+{
+    // If the currently edited logic asset is modified, flag warnings for refresh
+    if (CachedCompositeAsset.IsValid() && Object == CachedCompositeAsset.Get())
+    {
+        bWarningsDirty = true;
+    }
+}
+
+void FTCATLayerConfigCustomization::RefreshWarnings() const
+{
+    if (!bWarningsDirty)
+    {
+        return;
+    }
+
+    bWarningsDirty = false;
+    CachedWarningCount = 0;
+    CachedWarningText = FText::GetEmpty();
+
+    UObject* AssetObj = nullptr;
+    // Check if handle is still valid and retrieve object again to be safe
+    if (!CompositeAssetHandle.IsValid() || CompositeAssetHandle->GetValue(AssetObj) != FPropertyAccess::Success)
+    {
+        CachedCompositeAsset.Reset(); // Clear cache if property is gone
+        return;
+    }
+
+    UTCATCompositeRecipe* LogicAsset = Cast<UTCATCompositeRecipe>(AssetObj);
+    // Update cache
+    CachedCompositeAsset = LogicAsset;
+
+    if (!LogicAsset)
+    {
+        return;
+    }
+
+    TArray<FTCATSelfInfluenceWarningMessage> Warnings;
+    LogicAsset->GatherSelfInfluenceWarnings(Warnings);
+
+    CachedWarningCount = Warnings.Num();
+    if (CachedWarningCount == 0)
+    {
+        CachedWarningText = FText::GetEmpty();
+        return;
+    }
+
+    TArray<FText> WarningLines;
+    WarningLines.Reserve(CachedWarningCount);
+    for (const FTCATSelfInfluenceWarningMessage& Warning : Warnings)
+    {
+        WarningLines.Add(Warning.Message);
+    }
+
+    CachedWarningText = FText::Join(FText::FromString(TEXT("\n")), WarningLines);
+}
+
+FText FTCATLayerConfigCustomization::GetWarningText() const
+{
+    RefreshWarnings();
+    return CachedWarningText;
+}
+
+EVisibility FTCATLayerConfigCustomization::GetWarningVisibility() const
+{
+    RefreshWarnings();
+    return (CachedWarningCount > 0) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 #undef LOCTEXT_NAMESPACE

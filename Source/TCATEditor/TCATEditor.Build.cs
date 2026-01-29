@@ -28,11 +28,12 @@ public class TCATEditor : ModuleRules
 				"Slate",
 				"SlateCore",
 				"UnrealEd",
-				"PropertyEditor", 
+				"PropertyEditor",
 				"TCAT",
-                "InputCore",
-                "ToolMenus",
-				"AssetRegistry"
+				"InputCore",
+				"ToolMenus",
+				"AssetRegistry",
+				"DeveloperSettings"
 			}
 		);
 	}

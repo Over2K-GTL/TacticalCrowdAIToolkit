@@ -8,12 +8,14 @@
 #include "TextureResource.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "GameFramework/Volume.h"
+#include "GameFramework/Pawn.h"
 #include "Scene/TCATInfluenceVolume.h"
 #include "Simulation/TCATGridResource.h"
 #include "Engine/World.h"
 #include "Async/ParallelFor.h"
 #include "Components/PrimitiveComponent.h"
 #include "CollisionQueryParams.h"
+#include "Core/TCATSettings.h"
 
 using namespace TCATMapConstant;
 
@@ -106,20 +108,27 @@ void FTCATHeightMapModule::FlushAndRedraw(const ATCATInfluenceVolume* Owner)
 }
 
 
-void FTCATHeightMapModule::PerformLineTraces(
-	ATCATInfluenceVolume* Owner,
-	const FBox& Bounds,
-	float CellSize,
-	FIntPoint Resolution,
-	FTCATGridResource& OutResource)
+void FTCATHeightMapModule::PerformLineTraces(ATCATInfluenceVolume* Owner, const FBox& Bounds,
+	float CellSize, FIntPoint Resolution, FTCATGridResource& OutResource)
 {
+	const UTCATSettings* Settings = GetDefault<UTCATSettings>();
 	FCollisionObjectQueryParams ObjectParams;
-	ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
-	
-	FCollisionQueryParams Params;
-	Params.bTraceComplex = false;
-	Params.AddIgnoredActor(Owner);
 
+	if (Settings && Settings->HeightMapTraceChannels.Num() > 0)
+	{
+		for (const auto& Channel : Settings->HeightMapTraceChannels)
+		{
+			ObjectParams.AddObjectTypesToQuery(Channel);	
+		}
+	}
+	else
+	{
+		ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
+		ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+	}
+	
+	const FCollisionQueryParams BaseParams(SCENE_QUERY_STAT(TCAT_HeightBake), false, Owner);
+	
 	const float ZStart = Bounds.Max.Z + TRACE_OFFSET_UP;
 	const float ZEnd = Bounds.Min.Z - TRACE_OFFSET_DOWN;
 
@@ -138,58 +147,59 @@ void FTCATHeightMapModule::PerformLineTraces(
 		const float WorldX = Bounds.Min.X + (X * CellSize) + (CellSize * CELL_CENTER_OFFSET);
 		const float WorldY = Bounds.Min.Y + (Y * CellSize) + (CellSize * CELL_CENTER_OFFSET);
 		
-		const FVector TraceStart(WorldX, WorldY, ZStart);
+		FVector TraceStart(WorldX, WorldY, ZStart);
 		const FVector TraceEnd(WorldX, WorldY, ZEnd);
 
-		TArray<FHitResult> Hits;
-		const bool bHit = World->LineTraceMultiByObjectType(
-			Hits,
-			TraceStart,
-			TraceEnd,
-			ObjectParams,
-			Params
-		);
+		FCollisionQueryParams TraceParams = BaseParams;
 
-		float FinalHeight = ZEnd;
+		float FinalHeight = Bounds.Min.Z;
 
-		if (bHit)
+		int32 PenetrationCount = 0;
+		const int32 MaxPenetrations = 10;
+
+		while (PenetrationCount < MaxPenetrations)
 		{
-			for (const FHitResult& HitResult : Hits)
+			FHitResult HitResult;
+			const bool bHit = World->LineTraceSingleByObjectType(
+				HitResult,
+				TraceStart,
+				TraceEnd,
+				ObjectParams,
+				TraceParams
+			);
+
+			if (!bHit) break;
+
+			const AActor* HitActor = HitResult.GetActor();
+			if (!HitActor) 
 			{
-				const AActor* HitActor = HitResult.GetActor();
-				const UPrimitiveComponent* HitComp = HitResult.GetComponent();
-				
-				if (!HitActor || !HitComp)
-				{
-					continue;
-				}
-				
-				// Ignore movable objects
-				if (HitComp->Mobility == EComponentMobility::Movable)
-				{
-					continue;
-				}
-				
-				// Ignore volumes
-				if (HitActor->IsA(AVolume::StaticClass()))
-				{
-					continue;
-				}
-				
-				FinalHeight = HitResult.ImpactPoint.Z;
 				break;
 			}
+
+			bool bShouldIgnore = HitActor->IsA<APawn>();
+			if (!bShouldIgnore && HitActor->ActorHasTag(FName("TCAT_IgnoreBake")))
+			{
+				bShouldIgnore = true;
+			}
+
+			if (bShouldIgnore)
+			{
+				TraceStart = HitResult.Location + (FVector::DownVector * 2.0f);
+				TraceParams.AddIgnoredActor(HitActor);
+				PenetrationCount++;
+				continue;
+			}
+			
+			FinalHeight = HitResult.ImpactPoint.Z;
+			break;
 		}
 		
 		OutResource.Grid[Index] = FinalHeight;
 	});
 }
 
-void FTCATHeightMapModule::DrawHeightDebugPoints(
-	const ATCATInfluenceVolume* Owner,
-	const FTCATGridResource& Resource,
-	const FBox& Bounds,
-	float CellSize) const
+void FTCATHeightMapModule::DrawHeightDebugPoints(const ATCATInfluenceVolume* Owner,
+	const FTCATGridResource& Resource, const FBox& Bounds, float CellSize) const
 {
 	UWorld* World = Owner->GetWorld();
 	if (!World)

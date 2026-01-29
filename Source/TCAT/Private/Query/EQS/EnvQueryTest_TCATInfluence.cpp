@@ -43,23 +43,20 @@ void UEnvQueryTest_TCATInfluence::RunTest(FEnvQueryInstance& QueryInstance) cons
 	float SelfRadius = 0.f;
 	FTCATSelfInfluenceResult SelfInfluence;
 
-	if (bSubtractSelfInfluence)
+	if (AActor* QuerierActor = Cast<AActor>(QueryInstance.Owner.Get()))
 	{
-		if (AActor* QuerierActor = Cast<AActor>(QueryInstance.Owner.Get()))
+		if (UTCATInfluenceComponent* Comp = QuerierActor->FindComponentByClass<UTCATInfluenceComponent>())
 		{
-			if (UTCATInfluenceComponent* Comp = QuerierActor->FindComponentByClass<UTCATInfluenceComponent>())
-			{
-				QuerierLocation = Comp->ResolveWorldLocation();
-				SelfRadius = Comp->GetRadius(MapTag);
+			QuerierLocation = Comp->ResolveWorldLocation();
+			SelfRadius = Comp->GetRadius(MapTag);
 
-				if (SelfRadius > KINDA_SMALL_NUMBER)
+			if (SelfRadius > KINDA_SMALL_NUMBER)
+			{
+				FTCATSelfInfluenceResult SelfResult = Comp->GetSelfInfluenceResult(MapTag, Volume);
+				if (SelfResult.IsValid())
 				{
-					FTCATSelfInfluenceResult SelfResult = Comp->GetSelfInfluenceResult(MapTag, Volume);
-					if (SelfResult.IsValid())
-					{
-						SelfInfluence = SelfResult;
-						bDoSubtract = true;
-					}
+					SelfInfluence = SelfResult;
+					bDoSubtract = true;
 				}
 			}
 		}

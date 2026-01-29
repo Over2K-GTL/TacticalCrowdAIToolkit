@@ -1,10 +1,11 @@
-// Copyright 2025-2026 Over2K. All Rights Reserved.
-
+﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
 
 #include "Core/TCATSettings.h"
 
 UTCATSettings::UTCATSettings() : MaxMapResolution(2048)
 {
+	HeightMapTraceChannels.Add(ECC_WorldStatic);
+	HeightMapTraceChannels.Add(ECC_WorldDynamic);
 }
 
 TArray<FString> UTCATSettings::GetAllTagOptions()

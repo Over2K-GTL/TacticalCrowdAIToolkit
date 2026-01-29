@@ -8,7 +8,17 @@
 #include "EnvQueryGenerator_TCATGrid.generated.h"
 
 /**
- * Generates grid points aligned with TCAT Influence Volume settings.
+ * EQS Generator: Creates candidate points aligned to TCAT Influence Volume grid settings.
+ *
+ * Why use this instead of a generic grid generator?
+ * - Keeps candidates aligned with the influence map resolution (CellSize).
+ * - Ensures generated points stay inside the target TCAT volume bounds.
+ * - Optionally uses TCAT baked height as a better Z start before NavMesh projection.
+ *
+ * Typical EQS setup:
+ * - Generator: TCATGrid (this)
+ * - Test: TCATInfluence (score/filter by influence)
+ * - Optional extra tests: Distance, Trace, Dot, etc.
  */
 UCLASS()
 class TCAT_API UEnvQueryGenerator_TCATGrid : public UEnvQueryGenerator_ProjectedPoints
@@ -22,11 +32,11 @@ public:
 	virtual FText GetDescriptionTitle() const override;
 
 protected:
-	// Target Influence Map to align with.
+	// Target Influence Map to align with.(e.g., 'Enemy', 'Cover').
 	UPROPERTY(EditAnywhere, Category = "TCAT", meta = (GetOptions = "TCAT.TCATSettings.GetAllTagOptions"))
 	FName MapTag;
 
-	// Center of the generation.
+	// SearchCenter of the generation.
 	UPROPERTY(EditAnywhere, Category = "TCAT")
 	TSubclassOf<UEnvQueryContext> GenerateAround;
 

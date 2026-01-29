@@ -6,6 +6,7 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "Core/TCATSubsystem.h"
 #include "Scene/TCATInfluenceComponent.h"
+#include "AIController.h"
 
 UBTService_TCATAsyncQuery::UBTService_TCATAsyncQuery()
 {
@@ -59,7 +60,7 @@ void UBTService_TCATAsyncQuery::InitializeFromAsset(UBehaviorTree& Asset)
 
     if (CenterLocationKey.SelectedKeyName.IsNone())
     {
-        UE_LOG(LogTCAT, Warning, TEXT("BTService [%s]: Center Location Key is missing!"), *GetName());
+        UE_LOG(LogTCAT, Warning, TEXT("BTService [%s]: SearchCenter Location Key is missing!"), *GetName());
     }
 
     if (QueryMode == ETCATServiceQueryMode::ConditionCheck)
@@ -157,7 +158,7 @@ void UBTService_TCATAsyncQuery::TickNode(UBehaviorTreeComponent& OwnerComp, uint
 
     TWeakObjectPtr<UBehaviorTreeComponent> WeakOwnerComp = &OwnerComp;
     
-    auto QueryCallback = [this, WeakOwnerComp](const TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& Results)
+    auto QueryCallback = [this, WeakOwnerComp](const FTCATQueryResultArray& Results)
     {
         if (Results.Num() > 0)
         {
@@ -171,56 +172,44 @@ void UBTService_TCATAsyncQuery::TickNode(UBehaviorTreeComponent& OwnerComp, uint
 
     FTCATBatchQuery NewQuery;
     NewQuery.MapTag = MapTag;
-    NewQuery.Center = CenterPos;
+    NewQuery.SearchCenter = CenterPos;
     NewQuery.CompareValue = CompareValue;
     NewQuery.CompareType = CompareType;
     NewQuery.SearchRadius = SearchRadius;
     NewQuery.OnComplete = QueryCallback;
     NewQuery.MaxResults = 1;
-    NewQuery.RandomSeed = HashCombineFast(GetTypeHash(NewQuery.MapTag), GetTypeHash(NewQuery.Center));
+    NewQuery.RandomSeed = HashCombineFast(GetTypeHash(NewQuery.MapTag), GetTypeHash(NewQuery.SearchCenter));
     NewQuery.RandomSeed = HashCombineFast(NewQuery.RandomSeed, (uint32)GFrameCounter);
 
     NewQuery.bExcludeUnreachableLocation = bExcludeUnreachableLocation;
     NewQuery.bTraceVisibility = bTraceVisibility;
     NewQuery.bIgnoreZValue = bIgnoreZValue;
-    NewQuery.bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
     
+    AAIController* AIOwner = OwnerComp.GetAIOwner();
+    AActor* DebugActor = AIOwner ? AIOwner->GetPawn() : OwnerComp.GetOwner();
 #if ENABLE_VISUAL_LOG
-    NewQuery.DebugInfo.bEnabled = bDebugQuery;
+    NewQuery.DebugInfo.DebugOwner = DebugActor;
 #endif
-    
-    NewQuery.DistanceBiasType = DistanceBiasType;
+    NewQuery.DistanceBiasCurve = DistanceBiasCurve;
+    NewQuery.DistanceBiasCurveID = DistanceBiasCurve ? TCAT->GetCurveID(DistanceBiasCurve.Get()) : INDEX_NONE;
     NewQuery.DistanceBiasWeight = DistanceBiasWeight;
-
-    float ResolvedHalfHeight = HalfHeightOverride;
+    
     ATCATInfluenceVolume* Volume = TCAT->GetInfluenceVolume(MapTag);
     NewQuery.Curve = nullptr;
     NewQuery.SelfRemovalFactor = 0.0f;
     NewQuery.InfluenceRadius = 0.0f;
+    NewQuery.SelfOrigin = NewQuery.SearchCenter;
 
-    UTCATInfluenceComponent* InfluenceComp = nullptr;
-    if (AActor* OwnerActor = OwnerComp.GetOwner())
+    UTCATInfluenceComponent* InfluenceComp = ExplicitInfluenceComponent.Get();
+    if (!InfluenceComp && DebugActor)
     {
-        InfluenceComp = OwnerActor->FindComponentByClass<UTCATInfluenceComponent>();
+        InfluenceComp = DebugActor->FindComponentByClass<UTCATInfluenceComponent>();
     }
 
     const bool bComponentHasLayer = InfluenceComp && InfluenceComp->HasInfluenceLayer(MapTag);
-    if (ResolvedHalfHeight < 0.0f)
+    if (InfluenceComp && bComponentHasLayer && Volume)
     {
-        if (bComponentHasLayer)
-        {
-            ResolvedHalfHeight = InfluenceComp->GetInfluenceHalfHeight(MapTag);
-        }
-        else
-        {
-            ResolvedHalfHeight = 0.0f;
-        }
-    }
-
-    NewQuery.InfluenceHalfHeight = ResolvedHalfHeight;
-
-    if (bSubtractSelfInfluence && InfluenceComp && bComponentHasLayer && Volume)
-    {
+        NewQuery.SelfOrigin = InfluenceComp->GetComponentLocation();
         const FTCATSelfInfluenceResult SelfResult = InfluenceComp->GetSelfInfluenceResult(MapTag, Volume);
 
         if (SelfResult.IsValid())
@@ -228,6 +217,7 @@ void UBTService_TCATAsyncQuery::TickNode(UBehaviorTreeComponent& OwnerComp, uint
             NewQuery.Curve = SelfResult.Curve;
             NewQuery.SelfRemovalFactor = SelfResult.FinalRemovalFactor;
             NewQuery.InfluenceRadius = SelfResult.InfluenceRadius;
+            NewQuery.SelfOrigin = SelfResult.SourceLocation;
         }
     }
 
@@ -338,3 +328,5 @@ void UBTService_TCATAsyncQuery::DescribeRuntimeValues(const UBehaviorTreeCompone
     }
 }
 #endif
+
+

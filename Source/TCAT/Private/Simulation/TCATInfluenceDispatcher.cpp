@@ -157,7 +157,7 @@ void FTCATInfluenceDispatcher::DispatchGPU_Batched(
 			);
 
 			FRDGTextureRef DummyMinMaxTex = GraphBuilder.CreateTexture(Desc, TEXT("TCAT_MinMax_Dummy"));
-			AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(DummyMinMaxTex), FVector4f(0, 0, 0, 0));
+			AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(DummyMinMaxTex), FVector4f(0, 1, 0, 0));
 			DummyMinMaxSRV = GraphBuilder.CreateSRV(FRDGTextureSRVDesc::Create(DummyMinMaxTex));
 			return DummyMinMaxSRV;
 		};
@@ -334,66 +334,19 @@ void FTCATInfluenceDispatcher::DispatchCPU(const FTCATInfluenceDispatchParams& P
 
     const TArray<float>* HeightData = Params.GlobalHeightMapData;
     const bool bUseCellHeight = HeightData && HeightData->Num() >= TotalCells;
-    const bool bLimitVerticalRange = (Params.ProjectionFlags & static_cast<int32>(ETCATProjectionFlag::InfluenceHalfHeight)) != 0;
+    const bool bLimitVerticalRange = (Params.ProjectionFlags & static_cast<int32>(ETCATProjectionFlag::MaxInfluenceHeight)) != 0;
     const bool bCheckLineOfSight = (Params.ProjectionFlags & static_cast<int32>(ETCATProjectionFlag::LineOfSight)) != 0;
-    const FVector2f MapOriginXY(Params.MapStartPos.X, Params.MapStartPos.Y);
-    const float HalfGrid = Params.GridSize * 0.5f;
 
-	EParallelForFlags PFFlags = Params.bForceCPUSingleThread ? EParallelForFlags::ForceSingleThread : EParallelForFlags::None;
+    EParallelForFlags PFFlags = Params.bForceCPUSingleThread ? EParallelForFlags::ForceSingleThread : EParallelForFlags::None;
 
     ParallelFor(TotalCells, [&](int32 Index)
     {
-        const int32 X = Index % MapWidth;
-        const int32 Y = Index / MapWidth;
-
-        const FVector2f CellOffset(static_cast<float>(X) * Params.GridSize + HalfGrid,
-                                   static_cast<float>(Y) * Params.GridSize + HalfGrid);
-        const FVector2f CellWorldXY = MapOriginXY + CellOffset;
-
-        float CellHeight = Params.MapStartPos.Z;
-        if (bUseCellHeight && HeightData->IsValidIndex(Index))
-        {
-            CellHeight = (*HeightData)[Index];
-        }
-
-        FVector CellPos(CellWorldXY.X, CellWorldXY.Y, CellHeight);
+        const FVector CellPos = CalculateCellWorldPosition(Index, Params, HeightData, bUseCellHeight);
 
         float TotalInfluence = 0.0f;
-
         for (const FTCATInfluenceSource& Src : Params.Sources)
         {
-            const FVector SourcePos(Src.WorldLocation);
-            const float Distance = FVector::Dist(CellPos, SourcePos);
-            if (Distance > Src.InfluenceRadius)
-            {
-                continue;
-            }
-
-            if (bLimitVerticalRange && Src.InfluenceHalfHeight > KINDA_SMALL_NUMBER)
-            {
-                if (FMath::Abs(CellPos.Z - SourcePos.Z) > Src.InfluenceHalfHeight)
-                {
-                    continue;
-                }
-            }
-
-            if (bCheckLineOfSight)
-            {
-                const float Visibility = CheckVisibilityCPU(Params, SourcePos, Src.LineOfSightOffset, CellPos);
-                if (Visibility <= 0.0f)
-                {
-                    continue;
-                }
-            }
-
-            const float NormalizedDist = Distance / FMath::Max(Src.InfluenceRadius, KINDA_SMALL_NUMBER);
-            const float CurveValue = SampleCurveAtlasCPU(
-                Params.CurveAtlasPixelData,
-                Params.AtlasWidth,
-                Src.CurveTypeIndex,
-                NormalizedDist);
-
-            TotalInfluence += CurveValue * Src.Strength;
+            TotalInfluence += CalculateSourceInfluence(Src, CellPos, Params, bLimitVerticalRange, bCheckLineOfSight);
         }
 
         TargetGrid[Index] = TotalInfluence;
@@ -429,7 +382,7 @@ void FTCATInfluenceDispatcher::DispatchCPU_Partial(
 
     const TArray<float>* HeightData = Params.GlobalHeightMapData;
     const bool bUseCellHeight = HeightData && HeightData->Num() >= TotalCells;
-    const bool bLimitVerticalRange = (Params.ProjectionFlags & static_cast<int32>(ETCATProjectionFlag::InfluenceHalfHeight)) != 0;
+    const bool bLimitVerticalRange = (Params.ProjectionFlags & static_cast<int32>(ETCATProjectionFlag::MaxInfluenceHeight)) != 0;
     const bool bCheckLineOfSight = (Params.ProjectionFlags & static_cast<int32>(ETCATProjectionFlag::LineOfSight)) != 0;
     const FVector2f MapOriginXY(Params.MapStartPos.X, Params.MapStartPos.Y);
     const float HalfGrid = Params.GridSize * 0.5f;
@@ -447,52 +400,50 @@ void FTCATInfluenceDispatcher::DispatchCPU_Partial(
 
     // Helper lambda to gather affected indices
     auto GatherAffectedCells = [&](const FTCATInfluenceSource& Src, TArray<int32>& OutIndices)
+    {
+        const FVector SourcePos(Src.WorldLocation);
+        const float RadiusSq = Src.InfluenceRadius * Src.InfluenceRadius;
+
+        const FVector2f SourceXY(SourcePos.X, SourcePos.Y);
+        const FVector2f RelativePos = SourceXY - MapOriginXY;
+
+        const int32 MinX = FMath::Max(0, FMath::FloorToInt((RelativePos.X - Src.InfluenceRadius) / Params.GridSize));
+        const int32 MaxX = FMath::Min(MapWidth - 1, FMath::CeilToInt((RelativePos.X + Src.InfluenceRadius) / Params.GridSize));
+        const int32 MinY = FMath::Max(0, FMath::FloorToInt((RelativePos.Y - Src.InfluenceRadius) / Params.GridSize));
+        const int32 MaxY = FMath::Min(MapHeight - 1, FMath::CeilToInt((RelativePos.Y + Src.InfluenceRadius) / Params.GridSize));
+
+        for (int32 Y = MinY; Y <= MaxY; ++Y)
         {
-            const FVector SourcePos(Src.WorldLocation);
-            const float RadiusSq = Src.InfluenceRadius * Src.InfluenceRadius;
-
-            const FVector2f SourceXY(SourcePos.X, SourcePos.Y);
-            const FVector2f RelativePos = SourceXY - MapOriginXY;
-
-            const int32 MinX = FMath::Max(0, FMath::FloorToInt((RelativePos.X - Src.InfluenceRadius) / Params.GridSize));
-            const int32 MaxX = FMath::Min(MapWidth - 1, FMath::CeilToInt((RelativePos.X + Src.InfluenceRadius) / Params.GridSize));
-            const int32 MinY = FMath::Max(0, FMath::FloorToInt((RelativePos.Y - Src.InfluenceRadius) / Params.GridSize));
-            const int32 MaxY = FMath::Min(MapHeight - 1, FMath::CeilToInt((RelativePos.Y + Src.InfluenceRadius) / Params.GridSize));
-
-            for (int32 Y = MinY; Y <= MaxY; ++Y)
+            for (int32 X = MinX; X <= MaxX; ++X)
             {
-                for (int32 X = MinX; X <= MaxX; ++X)
+                const int32 Index = Y * MapWidth + X;
+
+                const FVector2f CellOffset(static_cast<float>(X) * Params.GridSize + HalfGrid,
+                    static_cast<float>(Y) * Params.GridSize + HalfGrid);
+                const FVector2f CellWorldXY = MapOriginXY + CellOffset;
+
+                float CellHeight = Params.MapStartPos.Z;
+                if (bUseCellHeight && HeightData->IsValidIndex(Index))
                 {
-                    const int32 Index = Y * MapWidth + X;
+                    CellHeight = (*HeightData)[Index];
+                }
 
-                    const FVector2f CellOffset(static_cast<float>(X) * Params.GridSize + HalfGrid,
-                        static_cast<float>(Y) * Params.GridSize + HalfGrid);
-                    const FVector2f CellWorldXY = MapOriginXY + CellOffset;
+                const FVector CellPos(CellWorldXY.X, CellWorldXY.Y, CellHeight);
+                const float DistSq = FVector::DistSquared(CellPos, SourcePos);
 
-                    float CellHeight = Params.MapStartPos.Z;
-                    if (bUseCellHeight && HeightData->IsValidIndex(Index))
-                    {
-                        CellHeight = (*HeightData)[Index];
-                    }
-
-                    const FVector CellPos(CellWorldXY.X, CellWorldXY.Y, CellHeight);
-                    const float DistSq = FVector::DistSquared(CellPos, SourcePos);
-
-                    if (DistSq <= RadiusSq)
-                    {
-                        OutIndices.Add(Index);
-                    }
+                if (DistSq <= RadiusSq)
+                {
+                    OutIndices.Add(Index);
                 }
             }
-        };
+        }
+    };
 
-    // Gather affected cells for old sources
+    // Gather affected cells
     for (int32 i = 0; i < OldSources.Num(); ++i)
     {
         GatherAffectedCells(OldSources[i], OldSourcesData[i].AffectedIndices);
     }
-
-    // Gather affected cells for new sources
     for (int32 i = 0; i < NewSources.Num(); ++i)
     {
         GatherAffectedCells(NewSources[i], NewSourcesData[i].AffectedIndices);
@@ -500,132 +451,36 @@ void FTCATInfluenceDispatcher::DispatchCPU_Partial(
 
     EParallelForFlags PFFlags = Params.bForceCPUSingleThread ? EParallelForFlags::ForceSingleThread : EParallelForFlags::None;
 
-    // Step 1: Remove old influence (from predicted position)
+    // Remove old influence (from predicted position)
     for (int32 SourceIdx = 0; SourceIdx < OldSources.Num(); ++SourceIdx)
     {
         const FTCATInfluenceSource& Src = OldSources[SourceIdx];
-        const FVector OldSourcePos(Src.WorldLocation);
         const TArray<int32>& AffectedIndices = OldSourcesData[SourceIdx].AffectedIndices;
 
         ParallelFor(AffectedIndices.Num(), [&](int32 ArrayIdx)
-            {
-                const int32 Index = AffectedIndices[ArrayIdx];
-                const int32 X = Index % MapWidth;
-                const int32 Y = Index / MapWidth;
+        {
+            const int32 Index = AffectedIndices[ArrayIdx];
+            const FVector CellPos = CalculateCellWorldPosition(Index, Params, HeightData, bUseCellHeight);
 
-                const FVector2f CellOffset(static_cast<float>(X) * Params.GridSize + HalfGrid,
-                    static_cast<float>(Y) * Params.GridSize + HalfGrid);
-                const FVector2f CellWorldXY = MapOriginXY + CellOffset;
-
-                float CellHeight = Params.MapStartPos.Z;
-                if (bUseCellHeight && HeightData->IsValidIndex(Index))
-                {
-                    CellHeight = (*HeightData)[Index];
-                }
-
-                FVector CellPos(CellWorldXY.X, CellWorldXY.Y, CellHeight);
-                const float Distance = FVector::Dist(CellPos, OldSourcePos);
-                if( Distance > Src.InfluenceRadius)
-                {
-                    return;
-				}
-
-                // Vertical range check
-                if (bLimitVerticalRange && Src.InfluenceHalfHeight > KINDA_SMALL_NUMBER)
-                {
-                    if (FMath::Abs(CellPos.Z - OldSourcePos.Z) > Src.InfluenceHalfHeight)
-                    {
-                        return;
-                    }
-                }
-
-                // Line of sight check (using old position)
-                if (bCheckLineOfSight)
-                {
-                    const float Visibility = CheckVisibilityCPU(Params, OldSourcePos, Src.LineOfSightOffset, CellPos);
-                    if (Visibility <= 0.0f)
-                    {
-                        return;
-                    }
-                }
-
-                // Calculate old influence to remove
-                const float NormalizedDist = Distance / FMath::Max(Src.InfluenceRadius, KINDA_SMALL_NUMBER);
-                const float CurveValue = SampleCurveAtlasCPU(
-                    Params.CurveAtlasPixelData,
-                    Params.AtlasWidth,
-                    Src.CurveTypeIndex,
-                    NormalizedDist);
-
-                const float OldInfluence = CurveValue * Src.Strength;
-
-                TargetGrid[Index] -= OldInfluence;
-
-            }, PFFlags);
+            const float OldInfluence = CalculateSourceInfluence(Src, CellPos, Params, bLimitVerticalRange, bCheckLineOfSight);
+            TargetGrid[Index] -= OldInfluence;
+        }, PFFlags);
     }
 
-    // Step 2: Add new influence (from current position)
+    // Add new influence (from current position)
     for (int32 SourceIdx = 0; SourceIdx < NewSources.Num(); ++SourceIdx)
     {
         const FTCATInfluenceSource& Src = NewSources[SourceIdx];
-        const FVector NewSourcePos(Src.WorldLocation);
         const TArray<int32>& AffectedIndices = NewSourcesData[SourceIdx].AffectedIndices;
 
         ParallelFor(AffectedIndices.Num(), [&](int32 ArrayIdx)
-            {
-                const int32 Index = AffectedIndices[ArrayIdx];
-                const int32 X = Index % MapWidth;
-                const int32 Y = Index / MapWidth;
+        {
+            const int32 Index = AffectedIndices[ArrayIdx];
+            const FVector CellPos = CalculateCellWorldPosition(Index, Params, HeightData, bUseCellHeight);
 
-                const FVector2f CellOffset(static_cast<float>(X) * Params.GridSize + HalfGrid,
-                    static_cast<float>(Y) * Params.GridSize + HalfGrid);
-                const FVector2f CellWorldXY = MapOriginXY + CellOffset;
-
-                float CellHeight = Params.MapStartPos.Z;
-                if (bUseCellHeight && HeightData->IsValidIndex(Index))
-                {
-                    CellHeight = (*HeightData)[Index];
-                }
-
-                FVector CellPos(CellWorldXY.X, CellWorldXY.Y, CellHeight);
-                const float Distance = FVector::Dist(CellPos, NewSourcePos);
-                if (Distance > Src.InfluenceRadius)
-                {
-                    return;
-                }
-
-                // Vertical range check
-                if (bLimitVerticalRange && Src.InfluenceHalfHeight > KINDA_SMALL_NUMBER)
-                {
-                    if (FMath::Abs(CellPos.Z - NewSourcePos.Z) > Src.InfluenceHalfHeight)
-                    {
-                        return;
-                    }
-                }
-
-                // Line of sight check (using new position)
-                if (bCheckLineOfSight)
-                {
-                    const float Visibility = CheckVisibilityCPU(Params, NewSourcePos, Src.LineOfSightOffset, CellPos);
-                    if (Visibility <= 0.0f)
-                    {
-                        return;
-                    }
-                }
-
-                // Calculate new influence to add
-                const float NormalizedDist = Distance / FMath::Max(Src.InfluenceRadius, KINDA_SMALL_NUMBER);
-                const float CurveValue = SampleCurveAtlasCPU(
-                    Params.CurveAtlasPixelData,
-                    Params.AtlasWidth,
-                    Src.CurveTypeIndex,
-                    NormalizedDist);
-
-                const float NewInfluence = CurveValue * Src.Strength;
-
-				TargetGrid[Index] += NewInfluence;
-
-            }, PFFlags);
+            const float NewInfluence = CalculateSourceInfluence(Src, CellPos, Params, bLimitVerticalRange, bCheckLineOfSight);
+            TargetGrid[Index] += NewInfluence;
+        }, PFFlags);
     }
 }
 
@@ -884,118 +739,30 @@ void FTCATInfluenceDispatcher::DispatchCPU_Composite(const FTCATCompositeDispatc
 {
     SCOPE_CYCLE_COUNTER(STAT_TCAT_CPU_Total);
 
-	if (!Params.OutGridData || Params.Operations.Num() == 0) { return; }
-	if (Params.MapSize.X == 0 || Params.MapSize.Y == 0) { return; }
+    if (!Params.OutGridData || Params.Operations.Num() == 0) { return; }
+    if (Params.MapSize.X == 0 || Params.MapSize.Y == 0) { return; }
 
-	const int64 TotalCells64 = (int64)Params.MapSize.X * (int64)Params.MapSize.Y;
-	if (TotalCells64 > 100 * 1024 * 1024)
-	{
-		UE_LOG(LogTCAT, Error, TEXT("DispatchCPU_Composite: Invalid MapSize detected! %ux%u (Total: %lld). Skipping."),
-			Params.MapSize.X, Params.MapSize.Y, TotalCells64);
-		return;
-	}
+    const int64 TotalCells64 = (int64)Params.MapSize.X * (int64)Params.MapSize.Y;
+    if (TotalCells64 > 100 * 1024 * 1024)
+    {
+        UE_LOG(LogTCAT, Error, TEXT("DispatchCPU_Composite: Invalid MapSize detected! %ux%u (Total: %lld). Skipping."),
+            Params.MapSize.X, Params.MapSize.Y, TotalCells64);
+        return;
+    }
 
-	TArray<float>& OutputGrid = *(Params.OutGridData);
-	const int32 TotalCells = (int32)TotalCells64;
+    TArray<float>& OutputGrid = *(Params.OutGridData);
+    const int32 TotalCells = (int32)TotalCells64;
     OutputGrid.SetNumZeroed(TotalCells);
 
-	struct FPreparedOp
-    {
-        ETCATCompositeOp Operation = ETCATCompositeOp::Add;
-        const TArray<float>* Grid = nullptr;
-
-        float Strength = 1.0f;
-
-        bool bClampInput = false;
-        float ClampMin = 0.0f;
-        float ClampMax = 0.0f;
-
-        bool bNormalizeInput = false;
-        float Min = 0.0f;
-        float Max = 0.0f;
-        float InvRange = 0.0f; // 1/(Max-Min) if valid, else 0
-    };
-
-    TArray<FPreparedOp> PreparedOps;
-    PreparedOps.Reserve(Params.Operations.Num());
-
-    // Cache min/max per layer tag so repeated tags don't rescan the same grid.
-    struct FNormStats { float Min = 0.0f; float Max = 0.0f; float InvRange = 0.0f; };
-    TMap<FName, FNormStats> NormCache;
-    NormCache.Reserve(Params.Operations.Num());
-
-    for (const FTCATCompositeOperation& Op : Params.Operations)
-    {
-        // Unary ops: no grid needed
-        if (Op.Operation == ETCATCompositeOp::Invert || Op.Operation == ETCATCompositeOp::Normalize)
-        {
-            FPreparedOp P;
-            P.Operation = Op.Operation;
-            P.Strength = Op.Strength;
-            PreparedOps.Add(P);
-            continue;
-        }
-
-        // Only prepare supported binary ops
-        if (Op.Operation != ETCATCompositeOp::Add &&
-            Op.Operation != ETCATCompositeOp::Subtract &&
-            Op.Operation != ETCATCompositeOp::Multiply &&
-            Op.Operation != ETCATCompositeOp::Divide)
-        {
-            continue;
-        }
-
-        const TArray<float>* Grid = nullptr;
-        if (const TArray<float>* const* FoundGridPtr = Params.InputGridDataMap.Find(Op.InputLayerTag))
-        {
-            Grid = (FoundGridPtr && *FoundGridPtr) ? *FoundGridPtr : nullptr;
-        }
-
-        // If missing grid, we still keep the op but it will contribute 0.0f at runtime.
-        FPreparedOp P;
-        P.Operation = Op.Operation;
-        P.Grid = Grid;
-        P.Strength = Op.Strength;
-        P.bClampInput = Op.bClampInput;
-        P.ClampMin = Op.ClampMin;
-        P.ClampMax = Op.ClampMax;
-        P.bNormalizeInput = Op.bNormalizeInput;
-
-        if (P.bNormalizeInput && P.Grid && P.Grid->Num() > 0)
-        {
-            if (FNormStats* Cached = NormCache.Find(Op.InputLayerTag))
-            {
-                P.Min = Cached->Min;
-                P.Max = Cached->Max;
-                P.InvRange = Cached->InvRange;
-            }
-            else
-            {
-                const float MinV = FMath::Min(*P.Grid);
-                const float MaxV = FMath::Max(*P.Grid);
-                const float Range = MaxV - MinV;
-
-                FNormStats Stats;
-                Stats.Min = MinV;
-                Stats.Max = MaxV;
-                Stats.InvRange = (FMath::Abs(Range) > KINDA_SMALL_NUMBER) ? (1.0f / Range) : 0.0f;
-
-                NormCache.Add(Op.InputLayerTag, Stats);
-
-                P.Min = Stats.Min;
-                P.Max = Stats.Max;
-                P.InvRange = Stats.InvRange;
-            }
-        }
-
-        PreparedOps.Add(P);
-    }
+    TArray<FPreparedCompositeOp> PreparedOps;
+    TMap<FName, FNormalizationStats> NormCache;
+    PrepareCompositeOperations(Params, PreparedOps, NormCache);
 
     EParallelForFlags PFFlags = Params.bForceCPUSingleThread ? EParallelForFlags::ForceSingleThread : EParallelForFlags::None;
 
     // Check if any Normalize operations exist - if so, we need segment-based processing
     bool bHasNormalize = false;
-    for (const FPreparedOp& Op : PreparedOps)
+    for (const FPreparedCompositeOp& Op : PreparedOps)
     {
         if (Op.Operation == ETCATCompositeOp::Normalize)
         {
@@ -1009,56 +776,7 @@ void FTCATInfluenceDispatcher::DispatchCPU_Composite(const FTCATCompositeDispatc
         // Fast path: no Normalize operations, process all in single pass
         ParallelFor(TotalCells, [&](int32 Index)
         {
-            float Accumulator = 0.0f;
-
-            for (const FPreparedOp& Op : PreparedOps)
-            {
-                if (Op.Operation == ETCATCompositeOp::Invert)
-                {
-                    Accumulator = (1.0f - Accumulator) * Op.Strength;
-                    continue;
-                }
-
-                float ValueB = 0.0f;
-
-                if (Op.Grid && Op.Grid->IsValidIndex(Index))
-                {
-                    ValueB = (*Op.Grid)[Index];
-
-                    if (Op.bClampInput)
-                    {
-                        ValueB = FMath::Clamp(ValueB, Op.ClampMin, Op.ClampMax);
-                    }
-
-                    if (Op.bNormalizeInput && Op.InvRange > 0.0f)
-                    {
-                        ValueB = (ValueB - Op.Min) * Op.InvRange;
-                    }
-                    else if (Op.bNormalizeInput)
-                    {
-                        ValueB = 0.0f;
-                    }
-                }
-
-                ValueB *= Op.Strength;
-
-                switch (Op.Operation)
-                {
-                    case ETCATCompositeOp::Add:      Accumulator += ValueB; break;
-                    case ETCATCompositeOp::Subtract: Accumulator -= ValueB; break;
-                    case ETCATCompositeOp::Multiply: Accumulator *= ValueB; break;
-                    case ETCATCompositeOp::Divide:
-                        if (FMath::Abs(ValueB) > KINDA_SMALL_NUMBER)
-                        {
-                            Accumulator /= ValueB;
-                        }
-                        break;
-                    default:
-                        break;
-                }
-            }
-
-            OutputGrid[Index] = Accumulator;
+            OutputGrid[Index] = ApplyCompositeOperations(Index, PreparedOps);
         }, PFFlags);
     }
     else
@@ -1073,7 +791,7 @@ void FTCATInfluenceDispatcher::DispatchCPU_Composite(const FTCATCompositeDispatc
             // Find the next Normalize operation or end of operations
             int32 OpEndIdx = OpStartIdx;
             while (OpEndIdx < PreparedOps.Num() &&
-                   PreparedOps[OpEndIdx].Operation != ETCATCompositeOp::Normalize)
+                PreparedOps[OpEndIdx].Operation != ETCATCompositeOp::Normalize)
             {
                 ++OpEndIdx;
             }
@@ -1082,44 +800,44 @@ void FTCATInfluenceDispatcher::DispatchCPU_Composite(const FTCATCompositeDispatc
             if (OpEndIdx > OpStartIdx)
             {
                 ParallelFor(TotalCells, [&](int32 Index)
-                {
-                    float Accumulator = OutputGrid[Index];
-
-                    for (int32 OpIdx = OpStartIdx; OpIdx < OpEndIdx; ++OpIdx)
                     {
-                        const FPreparedOp& Op = PreparedOps[OpIdx];
+                        float Accumulator = OutputGrid[Index];
 
-                        if (Op.Operation == ETCATCompositeOp::Invert)
+                        for (int32 OpIdx = OpStartIdx; OpIdx < OpEndIdx; ++OpIdx)
                         {
-                            Accumulator = (1.0f - Accumulator) * Op.Strength;
-                            continue;
-                        }
+                            const FPreparedCompositeOp& Op = PreparedOps[OpIdx];
 
-                        float ValueB = 0.0f;
-
-                        if (Op.Grid && Op.Grid->IsValidIndex(Index))
-                        {
-                            ValueB = (*Op.Grid)[Index];
-
-                            if (Op.bClampInput)
+                            if (Op.Operation == ETCATCompositeOp::Invert)
                             {
-                                ValueB = FMath::Clamp(ValueB, Op.ClampMin, Op.ClampMax);
+                                Accumulator = (1.0f - Accumulator) * Op.Strength;
+                                continue;
                             }
 
-                            if (Op.bNormalizeInput && Op.InvRange > 0.0f)
-                            {
-                                ValueB = (ValueB - Op.Min) * Op.InvRange;
-                            }
-                            else if (Op.bNormalizeInput)
-                            {
-                                ValueB = 0.0f;
-                            }
-                        }
+                            float ValueB = 0.0f;
 
-                        ValueB *= Op.Strength;
+                            if (Op.Grid && Op.Grid->IsValidIndex(Index))
+                            {
+                                ValueB = (*Op.Grid)[Index];
 
-                        switch (Op.Operation)
-                        {
+                                if (Op.bClampInput)
+                                {
+                                    ValueB = FMath::Clamp(ValueB, Op.ClampMin, Op.ClampMax);
+                                }
+
+                                if (Op.bNormalizeInput && Op.InvRange > 0.0f)
+                                {
+                                    ValueB = (ValueB - Op.Min) * Op.InvRange;
+                                }
+                                else if (Op.bNormalizeInput)
+                                {
+                                    ValueB = 0.0f;
+                                }
+                            }
+
+                            ValueB *= Op.Strength;
+
+                            switch (Op.Operation)
+                            {
                             case ETCATCompositeOp::Add:      Accumulator += ValueB; break;
                             case ETCATCompositeOp::Subtract: Accumulator -= ValueB; break;
                             case ETCATCompositeOp::Multiply: Accumulator *= ValueB; break;
@@ -1131,18 +849,18 @@ void FTCATInfluenceDispatcher::DispatchCPU_Composite(const FTCATCompositeDispatc
                                 break;
                             default:
                                 break;
+                            }
                         }
-                    }
 
-                    OutputGrid[Index] = Accumulator;
-                }, PFFlags);
+                        OutputGrid[Index] = Accumulator;
+                    }, PFFlags);
             }
 
             // If we hit a Normalize operation, apply it
             if (OpEndIdx < PreparedOps.Num() &&
                 PreparedOps[OpEndIdx].Operation == ETCATCompositeOp::Normalize)
             {
-                const FPreparedOp& NormOp = PreparedOps[OpEndIdx];
+                const FPreparedCompositeOp& NormOp = PreparedOps[OpEndIdx];
 
                 // Compute min/max of current accumulator
                 float MinVal = TNumericLimits<float>::Max();
@@ -1195,38 +913,130 @@ void FTCATInfluenceDispatcher::DispatchCPU_Composite_Partial(
         return;
     }
 
-    // Prepare operations (same as full composite)
-    struct FPreparedOp
+    TArray<FPreparedCompositeOp> PreparedOps;
+    TMap<FName, FNormalizationStats> NormCache;
+    PrepareCompositeOperations(Params, PreparedOps, NormCache);
+
+    EParallelForFlags PFFlags = Params.bForceCPUSingleThread ? EParallelForFlags::ForceSingleThread : EParallelForFlags::None;
+
+    // Check if Normalize exists
+    bool bHasNormalize = false;
+    for (const FPreparedCompositeOp& Op : PreparedOps)
     {
-        ETCATCompositeOp Operation = ETCATCompositeOp::Add;
-        const TArray<float>* Grid = nullptr;
-        float Strength = 1.0f;
-        bool bClampInput = false;
-        float ClampMin = 0.0f;
-        float ClampMax = 0.0f;
-        bool bNormalizeInput = false;
-        float Min = 0.0f;
-        float Max = 0.0f;
-        float InvRange = 0.0f;
-    };
+        if (Op.Operation == ETCATCompositeOp::Normalize)
+        {
+            bHasNormalize = true;
+            break;
+        }
+    }
 
-    TArray<FPreparedOp> PreparedOps;
-    PreparedOps.Reserve(Params.Operations.Num());
+    if (!bHasNormalize)
+    {
+        // Fast path: recalculate only affected cells
+        ParallelFor(AffectedCellIndices.Num(), [&](int32 ArrayIdx)
+        {
+            const int32 Index = AffectedCellIndices[ArrayIdx];
+            if (!OutputGrid.IsValidIndex(Index)) return;
 
-    struct FNormStats { float Min = 0.0f; float Max = 0.0f; float InvRange = 0.0f; };
-    TMap<FName, FNormStats> NormCache;
+            OutputGrid[Index] = ApplyCompositeOperations(Index, PreparedOps);
+        }, PFFlags);
+    }
+    else
+    {
+        DispatchCPU_Composite(Params);
+    }
+}
+
+// ================ Helper functions for cpu dispatch ===================
+
+FVector FTCATInfluenceDispatcher::CalculateCellWorldPosition(
+    int32 CellIndex,
+    const FTCATInfluenceDispatchParams& Params,
+    const TArray<float>* HeightData,
+    bool bUseCellHeight)
+{
+    const int32 MapWidth = static_cast<int32>(Params.MapSize.X);
+    const int32 X = CellIndex % MapWidth;
+    const int32 Y = CellIndex / MapWidth;
+
+    const FVector2f MapOriginXY(Params.MapStartPos.X, Params.MapStartPos.Y);
+    const float HalfGrid = Params.GridSize * 0.5f;
+
+    const FVector2f CellOffset(
+        static_cast<float>(X) * Params.GridSize + HalfGrid,
+        static_cast<float>(Y) * Params.GridSize + HalfGrid);
+
+    const FVector2f CellWorldXY = MapOriginXY + CellOffset;
+
+    float CellHeight = Params.MapStartPos.Z;
+    if (bUseCellHeight && HeightData && HeightData->IsValidIndex(CellIndex))
+    {
+        CellHeight = (*HeightData)[CellIndex];
+    }
+
+    return FVector(CellWorldXY.X, CellWorldXY.Y, CellHeight);
+}
+
+float FTCATInfluenceDispatcher::CalculateSourceInfluence(
+    const FTCATInfluenceSource& Source,
+    const FVector& CellPos,
+    const FTCATInfluenceDispatchParams& Params,
+    bool bLimitVerticalRange,
+    bool bCheckLineOfSight)
+{
+    const FVector SourcePos(Source.WorldLocation);
+    const float Distance = FVector::Dist(CellPos, SourcePos);
+
+    if (Distance > Source.InfluenceRadius)
+    {
+        return 0.0f;
+    }
+
+    if (bLimitVerticalRange && CellPos.Z > Source.MaxInfluenceZ)
+    {
+        return 0.0f;
+    }
+
+    if (bCheckLineOfSight)
+    {
+        const float Visibility = CheckVisibilityCPU(Params, SourcePos, Source.LineOfSightOffset, CellPos);
+        if (Visibility <= 0.0f)
+        {
+            return 0.0f;
+        }
+    }
+
+    const float NormalizedDist = Distance / FMath::Max(Source.InfluenceRadius, KINDA_SMALL_NUMBER);
+    const float CurveValue = SampleCurveAtlasCPU(
+        Params.CurveAtlasPixelData,
+        Params.AtlasWidth,
+        Source.CurveTypeIndex,
+        NormalizedDist);
+
+    return CurveValue * Source.Strength;
+}
+
+void FTCATInfluenceDispatcher::PrepareCompositeOperations(
+    const FTCATCompositeDispatchParams& Params,
+    TArray<FPreparedCompositeOp>& OutPreparedOps,
+    TMap<FName, FNormalizationStats>& OutNormCache)
+{
+    OutPreparedOps.Reserve(Params.Operations.Num());
+    OutNormCache.Reserve(Params.Operations.Num());
 
     for (const FTCATCompositeOperation& Op : Params.Operations)
     {
+        // Unary ops: no grid needed
         if (Op.Operation == ETCATCompositeOp::Invert || Op.Operation == ETCATCompositeOp::Normalize)
         {
-            FPreparedOp P;
+            FPreparedCompositeOp P;
             P.Operation = Op.Operation;
             P.Strength = Op.Strength;
-            PreparedOps.Add(P);
+            OutPreparedOps.Add(P);
             continue;
         }
 
+        // Only prepare supported binary ops
         if (Op.Operation != ETCATCompositeOp::Add &&
             Op.Operation != ETCATCompositeOp::Subtract &&
             Op.Operation != ETCATCompositeOp::Multiply &&
@@ -1241,7 +1051,8 @@ void FTCATInfluenceDispatcher::DispatchCPU_Composite_Partial(
             Grid = (FoundGridPtr && *FoundGridPtr) ? *FoundGridPtr : nullptr;
         }
 
-        FPreparedOp P;
+        // If missing grid, we still keep the op but it will contribute 0.0f at runtime.
+        FPreparedCompositeOp P;
         P.Operation = Op.Operation;
         P.Grid = Grid;
         P.Strength = Op.Strength;
@@ -1252,7 +1063,7 @@ void FTCATInfluenceDispatcher::DispatchCPU_Composite_Partial(
 
         if (P.bNormalizeInput && P.Grid && P.Grid->Num() > 0)
         {
-            if (FNormStats* Cached = NormCache.Find(Op.InputLayerTag))
+            if (FNormalizationStats* Cached = OutNormCache.Find(Op.InputLayerTag))
             {
                 P.Min = Cached->Min;
                 P.Max = Cached->Max;
@@ -1264,12 +1075,12 @@ void FTCATInfluenceDispatcher::DispatchCPU_Composite_Partial(
                 const float MaxV = FMath::Max(*P.Grid);
                 const float Range = MaxV - MinV;
 
-                FNormStats Stats;
+                FNormalizationStats Stats;
                 Stats.Min = MinV;
                 Stats.Max = MaxV;
                 Stats.InvRange = (FMath::Abs(Range) > KINDA_SMALL_NUMBER) ? (1.0f / Range) : 0.0f;
 
-                NormCache.Add(Op.InputLayerTag, Stats);
+                OutNormCache.Add(Op.InputLayerTag, Stats);
 
                 P.Min = Stats.Min;
                 P.Max = Stats.Max;
@@ -1277,89 +1088,62 @@ void FTCATInfluenceDispatcher::DispatchCPU_Composite_Partial(
             }
         }
 
-        PreparedOps.Add(P);
+        OutPreparedOps.Add(P);
     }
+}
 
-    EParallelForFlags PFFlags = Params.bForceCPUSingleThread ? EParallelForFlags::ForceSingleThread : EParallelForFlags::None;
+float FTCATInfluenceDispatcher::ApplyCompositeOperations(
+    int32 CellIndex,
+    const TArray<FPreparedCompositeOp>& PreparedOps)
+{
+    float Accumulator = 0.0f;
 
-    // Check if Normalize exists
-    bool bHasNormalize = false;
-    for (const FPreparedOp& Op : PreparedOps)
+    for (const FPreparedCompositeOp& Op : PreparedOps)
     {
-        if (Op.Operation == ETCATCompositeOp::Normalize)
+        if (Op.Operation == ETCATCompositeOp::Invert)
         {
-            bHasNormalize = true;
+            Accumulator = (1.0f - Accumulator) * Op.Strength;
+            continue;
+        }
+
+        float ValueB = 0.0f;
+
+        if (Op.Grid && Op.Grid->IsValidIndex(CellIndex))
+        {
+            ValueB = (*Op.Grid)[CellIndex];
+
+            if (Op.bClampInput)
+            {
+                ValueB = FMath::Clamp(ValueB, Op.ClampMin, Op.ClampMax);
+            }
+
+            if (Op.bNormalizeInput && Op.InvRange > 0.0f)
+            {
+                ValueB = (ValueB - Op.Min) * Op.InvRange;
+            }
+            else if (Op.bNormalizeInput)
+            {
+                ValueB = 0.0f;
+            }
+        }
+
+        ValueB *= Op.Strength;
+
+        switch (Op.Operation)
+        {
+        case ETCATCompositeOp::Add:      Accumulator += ValueB; break;
+        case ETCATCompositeOp::Subtract: Accumulator -= ValueB; break;
+        case ETCATCompositeOp::Multiply: Accumulator *= ValueB; break;
+        case ETCATCompositeOp::Divide:
+            if (FMath::Abs(ValueB) > KINDA_SMALL_NUMBER)
+            {
+                Accumulator /= ValueB;
+            }
+            break;
+        default:
             break;
         }
     }
 
-    if (!bHasNormalize)
-    {
-        // Fast path: recalculate only affected cells
-        ParallelFor(AffectedCellIndices.Num(), [&](int32 ArrayIdx)
-            {
-                const int32 Index = AffectedCellIndices[ArrayIdx];
-                if (!OutputGrid.IsValidIndex(Index)) return;
-
-                float Accumulator = 0.0f;
-
-                for (const FPreparedOp& Op : PreparedOps)
-                {
-                    if (Op.Operation == ETCATCompositeOp::Invert)
-                    {
-                        Accumulator = (1.0f - Accumulator) * Op.Strength;
-                        continue;
-                    }
-
-                    float ValueB = 0.0f;
-
-                    if (Op.Grid && Op.Grid->IsValidIndex(Index))
-                    {
-                        ValueB = (*Op.Grid)[Index];
-
-                        if (Op.bClampInput)
-                        {
-                            ValueB = FMath::Clamp(ValueB, Op.ClampMin, Op.ClampMax);
-                        }
-
-                        if (Op.bNormalizeInput && Op.InvRange > 0.0f)
-                        {
-                            ValueB = (ValueB - Op.Min) * Op.InvRange;
-                        }
-                        else if (Op.bNormalizeInput)
-                        {
-                            ValueB = 0.0f;
-                        }
-                    }
-
-                    ValueB *= Op.Strength;
-
-                    switch (Op.Operation)
-                    {
-                    case ETCATCompositeOp::Add:      Accumulator += ValueB; break;
-                    case ETCATCompositeOp::Subtract: Accumulator -= ValueB; break;
-                    case ETCATCompositeOp::Multiply: Accumulator *= ValueB; break;
-                    case ETCATCompositeOp::Divide:
-                        if (FMath::Abs(ValueB) > KINDA_SMALL_NUMBER)
-                        {
-                            Accumulator /= ValueB;
-                        }
-                        break;
-                    default:
-                        break;
-                    }
-                }
-
-                OutputGrid[Index] = Accumulator;
-            }, PFFlags);
-    }
-    else
-    {
-        // Slow path: Normalize requires full grid min/max
-        // In this case, we must recalculate the entire grid
-        UE_LOG(LogTCAT, Warning,
-            TEXT("DispatchCPU_Composite_Partial: Normalize operation detected. Partial update not optimal, falling back to full update."));
-
-        DispatchCPU_Composite(Params);
-    }
+    return Accumulator;
 }

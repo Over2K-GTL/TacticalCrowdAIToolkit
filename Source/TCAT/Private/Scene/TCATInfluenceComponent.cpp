@@ -9,7 +9,7 @@
 #include "Scene/TCATInfluenceVolume.h"
 #include "Core/TCATSettings.h"
 #include "Engine/World.h"
-#include "Query/TCATQueryTypes.h"
+#include "Engine/Engine.h"
 #include "VisualLogger/VisualLogger.h"
 
 DECLARE_CYCLE_STAT(TEXT("Component_TickComponent"), STAT_TCAT_TickInfluenceComponent, STATGROUP_TCAT);
@@ -200,11 +200,38 @@ void UTCATInfluenceComponent::AddReverseCalculationInfo(FName MapTag, const FTCA
 	CurveCalculateInfos.Add(MapTag, NewInfo);
 }
 
-FTCATSelfInfluenceResult UTCATInfluenceComponent::GetSelfInfluenceResult(
-	FName TargetMapTag,
+FTCATSelfInfluenceResult UTCATInfluenceComponent::GetSelfInfluenceResult(FName TargetMapTag,
 	const ATCATInfluenceVolume* Volume) const
 {
 	FTCATSelfInfluenceResult Result;
+	Result.SourceLocation = ResolveWorldLocation();
+	UTCATSubsystem* Subsystem = GetTCATSubsystem();
+
+	const auto TryUseCachedResult = [&]() -> bool
+	{
+		if (const FSelfInfluenceCacheEntry* CacheEntry = SelfInfluenceResultCache.Find(TargetMapTag))
+		{
+			if (CacheEntry->Volume.Get() == Volume && CacheEntry->FrameNumber == GFrameCounter)
+			{
+				Result = CacheEntry->Result;
+				return true;
+			}
+		}
+		return false;
+	};
+
+	const auto UpdateCache = [&](const FTCATSelfInfluenceResult& InResult)
+	{
+		FSelfInfluenceCacheEntry& CacheEntry = SelfInfluenceResultCache.FindOrAdd(TargetMapTag);
+		CacheEntry.Result = InResult;
+		CacheEntry.Volume = Volume;
+		CacheEntry.FrameNumber = GFrameCounter;
+	};
+
+	if (TryUseCachedResult())
+	{
+		return Result;
+	}
 
 	// Update cached recipes if volume changed
 	if (Volume != CachedRecipeVolume.Get())
@@ -216,6 +243,7 @@ FTCATSelfInfluenceResult UTCATInfluenceComponent::GetSelfInfluenceResult(
 	if (const FTCATCurveCalculateInfo* ManualInfo = CurveCalculateInfos.Find(TargetMapTag))
 	{
 		Result.Curve = ManualInfo->Curve;
+		Result.CurveTypeIndex = (Subsystem && ManualInfo->Curve) ? Subsystem->GetCurveID(ManualInfo->Curve) : INDEX_NONE;
 		float CalculatedStrength = ManualInfo->Strength;
 		
 		// Apply normalization if requested
@@ -226,6 +254,7 @@ FTCATSelfInfluenceResult UTCATInfluenceComponent::GetSelfInfluenceResult(
 		}
 		
 		Result.FinalRemovalFactor = CalculatedStrength;
+		UpdateCache(Result);
 		return Result;
 	}
 
@@ -233,6 +262,7 @@ FTCATSelfInfluenceResult UTCATInfluenceComponent::GetSelfInfluenceResult(
 	const TArray<FCachedRemovalStep>* Steps = CachedRemovalStepsRuntime.Find(TargetMapTag);
 	if (!Steps)
 	{
+		UpdateCache(Result);
 		return Result; // No data available
 	}
 
@@ -270,6 +300,7 @@ FTCATSelfInfluenceResult UTCATInfluenceComponent::GetSelfInfluenceResult(
 		{
 			RepresentativeCurve = ConfigEntry->FalloffCurve;
 			RepresentativeRadius = ConfigEntry->SourceData.InfluenceRadius;
+			Result.CurveTypeIndex = ConfigEntry->SourceData.CurveTypeIndex;
 		}
 	}
 
@@ -277,9 +308,9 @@ FTCATSelfInfluenceResult UTCATInfluenceComponent::GetSelfInfluenceResult(
 	Result.FinalRemovalFactor = TotalFactor;
 	Result.InfluenceRadius = RepresentativeRadius;
 	
+	UpdateCache(Result);
 	return Result;
 }
-
 void UTCATInfluenceComponent::UpdateCachedRecipes(const ATCATInfluenceVolume* Volume) const
 {
 	CachedRecipeVolume = Volume;

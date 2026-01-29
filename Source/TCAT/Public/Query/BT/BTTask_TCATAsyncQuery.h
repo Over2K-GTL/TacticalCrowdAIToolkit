@@ -7,6 +7,9 @@
 #include "Core/TCATSubsystem.h"
 #include "BTTask_TCATAsyncQuery.generated.h"
 
+class UCurveFloat;
+class UTCATInfluenceComponent;
+
 /**
  * Defines the type of query this Behavior Tree Task will perform.
  */
@@ -49,11 +52,11 @@ protected:
     UPROPERTY(EditAnywhere, Category = "TCAT Main", meta = (DisplayPriority = 1))
     ETCATTaskQueryMode QueryMode;
 
-    /** The specific Influence Map Layer to query (e.g., 'Ally', 'Enemy'). Must match a layer tag defined in TCAT Settings. */
-    UPROPERTY(EditAnywhere, Category = "TCAT Main", meta = (DisplayPriority = 2))
+    /** The specific Influence Map to query (e.g., 'Ally', 'Enemy'). Must match a map tag defined in TCAT Settings. */
+    UPROPERTY(EditAnywhere, Category = "TCAT Main", meta = (DisplayPriority = 2, GetOptions = "TCAT.TCATSettings.GetAllTagOptions"))
     FName MapTag = "Default";
-
-    /** Radius (in cm) of the search area around the Center Location. Hidden if sampling a single position. */
+    
+    /** Radius (in cm) of the search area around the SearchCenter Location. Hidden if sampling a single position. */
     UPROPERTY(EditAnywhere, Category = "TCAT Main", meta = (EditCondition = "QueryMode != ETCATTaskQueryMode::SamplePosition", EditConditionHides, DisplayPriority = 3))
     float SearchRadius = 500.0f;
     
@@ -85,7 +88,15 @@ protected:
     UPROPERTY(EditAnywhere, Category = "TCAT Blackboard")
     FBlackboardKeySelector ResultValueKey;
 
-    /** [Output] [Condition Mode Only] Where to store the boolean result (True if condition met, else False). */
+    /** [Output] [Condition Mode Only] Where to store the boolean result (True if condition met, else False).
+     * 
+     * ConditionCheck result meaning:
+     * - true  : query produced at least one valid result (condition satisfied / candidate found)
+     * - false : query produced no result (condition not met or nothing found)
+     *
+     * Note: This is "query success" in the Condition mode, not necessarily "raw sampled value comparison"
+     * unless your ETCATQueryType::Condition is defined that way.
+     */
     UPROPERTY(EditAnywhere, Category = "TCAT Blackboard", meta = (EditCondition = "QueryMode == ETCATTaskQueryMode::ConditionCheck", EditConditionHides))
     FBlackboardKeySelector ResultBoolKey;
 
@@ -111,14 +122,6 @@ protected:
     // =================================================================
     // [Advanced Options]
     // =================================================================
-
-    /** 
-     * If true, attempts to subtract the component's own influence from the calculation.
-     * Essential for finding "Safe Spots" while the agent itself is emitting "Danger".
-     */
-    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
-    bool bSubtractSelfInfluence = false;
-
     /** [Expensive] If true, validates whether the candidate location is reachable on the NavMesh. */
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
     bool bExcludeUnreachableLocation = false;
@@ -128,44 +131,33 @@ protected:
     bool bTraceVisibility = false;
 
     /** 
-     * If true, ignores the TCAT height map and uses 2D distance/logic. 
-     * Recommended: False (Use cached height map for accuracy).
-     */
+      * If true, ignores the TCAT height map and uses 2D distance/logic. 
+      * Recommended: False (Use cached height map for accuracy).
+      */
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
     bool bIgnoreZValue = false;
-
-    /** If true, applies a deterministic jitter so identical scores stay unique (prevents AI stacking). */
-    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
-    bool bUseRandomizedTiebreaker = true;
-
-    /** Enables Visual Logger debug drawing for this query. */
-    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
-    bool bDebugQuery = false;
-
+    
     /**
      * Applies a distance-based bias to the score.
      * - Standard: Linear falloff. Prefer closer targets.
      * - Relaxed: Convex curve. Ok with mid-range targets.
      * - Focused: Concave curve. Strictly prefer immediate surroundings.
      */
-    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
-    ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None;
+    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay, meta=(AllowedClasses="/Script/Engine.CurveFloat", AllowedPaths=TCAT_CURATED_CURVE_PATH_LITERAL))
+    TObjectPtr<UCurveFloat> DistanceBiasCurve = nullptr;
 
     /** 
      * The weight of the distance bias (0.0 ~ 1.0 recommended). 
      * Higher values make proximity more important than the influence map's raw value.
      */
-    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay, meta=(EditCondition="DistanceBiasType != ETCATDistanceBias::None"))
+    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay, meta=(EditCondition="DistanceBiasCurve != nullptr"))
     float DistanceBiasWeight = 0.5f;
 
-    /** 
-     * Optional override for the Influence Half Height. 
-     * -1: Use Source Component's default. 
-     *  0: Disable height check (Infinite cylinder).
-     */
-    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay, meta=(ClampMin="-1.0"))
-    float HalfHeightOverride = -1.0f;
+    /** Optional explicit influence component. If unset, the task searches the AI pawn. */
+    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
+    TObjectPtr<UTCATInfluenceComponent> ExplicitInfluenceComponent = nullptr;
 
+    
 private:
     /** Callback function to handle the async result from the TCAT Subsystem. */
     void OnQueryFinished(float Value, FVector Location, bool bSuccess);
@@ -180,3 +172,6 @@ private:
      */
     int32 AsyncQueryIdx = -1; 
 };
+
+
+

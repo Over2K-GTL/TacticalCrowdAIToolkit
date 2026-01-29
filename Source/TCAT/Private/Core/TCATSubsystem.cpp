@@ -1,5 +1,4 @@
-// Copyright 2025-2026 Over2K. All Rights Reserved.
-
+﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
 
 #include "Core/TCATSubsystem.h"
 #include "TCAT.h"
@@ -14,16 +13,19 @@
 #include "Core/TCATMathLibrary.h"
 #include "Query/TCATAsyncQueryAction.h"
 #include "Query/TCATAsyncMultiSearchAction.h"
+#include "Query/CPP/TCATQueryBuilder.h"
 #include "Engine/World.h"
 #include "Engine/Engine.h" 
 #include "Curves/CurveFloat.h"
 #include "RenderingThread.h"
 #include "Async/Async.h"
-#include "TextureResource.h" 
+#include "TextureResource.h"
 #include "VisualLogger/VisualLogger.h"
 
 DECLARE_CYCLE_STAT(TEXT("GPU_Readback_Retrieve"), STAT_TCAT_Readback_Retrieve, STATGROUP_TCAT);
 DECLARE_CYCLE_STAT(TEXT("GPU_Readback_LockCopy"), STAT_TCAT_Readback_LockCopy, STATGROUP_TCAT);
+
+DECLARE_DWORD_COUNTER_STAT(TEXT("Is_GPU_Update_Mode(1: GPU, 0: CPU)"), STAT_TCAT_Is_GPU_Update_Mode, STATGROUP_TCAT);
 
 void UTCATSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -31,7 +33,8 @@ void UTCATSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	// Fetch the global settings defined in Project Settings
 	const UTCATSettings* Settings = GetDefault<UTCATSettings>();
-    
+	CachedCurveSearchPath = TCATContentPaths::CuratedCurvePath;
+
 	if (Settings)
 	{
 		CachedMaxMapResolution = Settings->MaxMapResolution;
@@ -46,12 +49,14 @@ void UTCATSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	QueryProcessor.Initialize(GetWorld(), &MapGroupedVolumes);
 	InitializeStaticGlobalCurveAtlas();
 
-	CachedAdaptiveModeSwitchingDelay = Settings->AdaptiveModeSwitchingDelay;
-	CachedModeSwitchingSafetyMultiplier = Settings->ModeSwitchingSafetyMultiplier;
-	CachedWaitTimeMsThresholdForGPUMode = Settings->WaitTimeMsThresholdForGPUMode;
-	CachedSwitchConditionCheckDuration = Settings->SwitchConditionCheckDuration;
-	CachedRequiredSatisfactionRatio = Settings->RequiredSatisfactionRatio;
-	CachedSourceCountChangeThreshold = Settings->SourceCountChangeThreshold;
+	if (Settings)
+	{
+		CachedAdaptiveModeSwitchingDelay = Settings->AdaptiveModeSwitchingDelay;
+		CachedWaitTimeMsThresholdForGPUMode = Settings->WaitTimeMsThresholdForGPUMode;
+		CachedSwitchConditionCheckDuration = Settings->SwitchConditionCheckDuration;
+		CachedRequiredSatisfactionRatio = Settings->RequiredSatisfactionRatio;
+		CachedSourceCountChangeThreshold = Settings->SourceCountChangeThreshold;
+	}
 
 	AdaptiveModeSwitchingStartSeconds = GetWorld()->GetTimeSeconds() + CachedAdaptiveModeSwitchingDelay;
 	bIsFirstCheck = true;
@@ -70,23 +75,20 @@ void UTCATSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 	TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_Subsystem_Tick);
+	
+	SET_DWORD_STAT(STAT_TCAT_Is_GPU_Update_Mode, bRefreshWithGPUForAdaptiveVolumes ? 1 : 0);
 
 	if (!GlobalCurveAtlasRHI.IsValid()) { return; }
-
-	// Wait time 2 frames prior
-	const wchar_t* CurAdaptiveRefreshModeStr = bRefreshWithGPUForAdaptiveVolumes ? TEXT("GPU") : TEXT("CPU");
-	UE_LOG(LogTCAT, VeryVerbose, TEXT("[TCAT Subsystem] Frame Wait Time prior to 2 frames: %.2f ms, AdaptivelyRefreshMode: %s"), FPlatformTime::ToMilliseconds(GGameThreadWaitTime)
-		, CurAdaptiveRefreshModeStr);
 
 	// Check if CPU measurement task has completed
 	if (bIsMeasuringCPU && CPUMeasurementTask.IsReady())
 	{
-		CPUModeTickTimeMs = CPUMeasurementTask.Get();
+		CPUModePassTimeMs = CPUMeasurementTask.Get();
 		bIsMeasuringCPU = false;
-		UE_LOG(LogTCAT, Log, TEXT("[TCAT Subsystem] CPU Mode Measurement Complete: %.2f ms"), CPUModeTickTimeMs);
+		UE_LOG(LogTCAT, Verbose, TEXT("[TCAT Subsystem] CPU Mode Measurement Complete: %.2f ms"), CPUModePassTimeMs);
 	}
 
-	const float TickStartTimeMs = FPlatformTime::ToMilliseconds(FPlatformTime::Cycles());
+	CurPassTimeMs = 0.0f;
 
 	TArray<FTCATInfluenceDispatchParams> InfluenceBatch;
 	TArray<FTCATCompositeDispatchParams> CompositeBatch;
@@ -114,6 +116,7 @@ void UTCATSubsystem::Tick(float DeltaTime)
 		RetrieveGPUResults(Volume);
 		Volume->UpdateVolumeInfos();
 
+		const float SourcePassStartTimeMs = FPlatformTime::ToMilliseconds(FPlatformTime::Cycles());
 		for (const auto& Layer : Volume->BaseLayerConfigs)
 		{
 			const FName& Tag = Layer.BaseLayerTag;
@@ -138,6 +141,8 @@ void UTCATSubsystem::Tick(float DeltaTime)
 				CPUMeasurementInfluenceParams.Add(Params);
 			}
 		}
+		const float SourcePassEndTimeMs = FPlatformTime::ToMilliseconds(FPlatformTime::Cycles());
+		CurPassTimeMs += SourcePassEndTimeMs - SourcePassStartTimeMs;
 	}
 
 	// =========================================================================
@@ -153,10 +158,10 @@ void UTCATSubsystem::Tick(float DeltaTime)
 		}
 
 		TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_CompositePass);
-
+		const float CompositePassStartTimeMs = FPlatformTime::ToMilliseconds(FPlatformTime::Cycles());
 		for (const FTCATCompositeLayerConfig& Layer : Volume->CompositeLayers)
 		{
-			if (!Layer.LogicAsset || Layer.LogicAsset->Operations.Num() == 0) 
+			if (!Layer.CompositeRecipe || Layer.CompositeRecipe->Operations.Num() == 0) 
 			{
 				continue;
 			}
@@ -179,6 +184,8 @@ void UTCATSubsystem::Tick(float DeltaTime)
 				CPUMeasurementCompositeParams.Add(Params);
 			}
 		}
+		const float CompositePassEndTimeMs = FPlatformTime::ToMilliseconds(FPlatformTime::Cycles());
+		CurPassTimeMs += CompositePassEndTimeMs - CompositePassStartTimeMs;
 	}
 
 	// =========================================================================
@@ -253,22 +260,19 @@ void UTCATSubsystem::Tick(float DeltaTime)
 			});
 
 		bShouldMeasureCPUMode = false;
-		UE_LOG(LogTCAT, Log, TEXT("[TCAT Subsystem] Started CPU Mode Measurement on separate thread."));
+		UE_LOG(LogTCAT, Verbose, TEXT("[TCAT Subsystem] Started CPU Mode Measurement on separate thread."));
 	}
-
-	const float TickEndTimeMs = FPlatformTime::ToMilliseconds(FPlatformTime::Cycles());
-	CurTickTimeMs = TickEndTimeMs - TickStartTimeMs;
 
 	// =========================================================================
 	// Phase 6: Adaptive Mode Switching Logic (GPU <-> CPU)
 	// =========================================================================
 	if (bRefreshWithGPUForAdaptiveVolumes)
 	{
-		GPUModeTickTimeMs = CurTickTimeMs;
+		GPUModePassTimeMs = CurPassTimeMs;
 	}
 	else
 	{
-		CPUModeTickTimeMs = CurTickTimeMs;
+		CPUModePassTimeMs = CurPassTimeMs;
 	}
 
 	if (GetWorld()->GetTimeSeconds() > AdaptiveModeSwitchingStartSeconds)
@@ -288,8 +292,8 @@ void UTCATSubsystem::Tick(float DeltaTime)
 			const float WaitTimeMs = FPlatformTime::ToMilliseconds(GGameThreadWaitTime);
 			ElapsedTimeSinceConditionCheckStarted += DeltaTime;
 
-			if ((bRefreshWithGPUForAdaptiveVolumes && CPUModeTickTimeMs < GPUModeTickTimeMs + WaitTimeMs * CachedModeSwitchingSafetyMultiplier)
-				|| (!bRefreshWithGPUForAdaptiveVolumes && WaitTimeMs < CachedWaitTimeMsThresholdForGPUMode))
+			if ((bRefreshWithGPUForAdaptiveVolumes && CPUModePassTimeMs + CachedWaitTimeMsThresholdForGPUMode < GPUModePassTimeMs + WaitTimeMs)
+				|| (!bRefreshWithGPUForAdaptiveVolumes && WaitTimeMs <= CachedWaitTimeMsThresholdForGPUMode))
 			{
 				SatisfiedFrameCount++;
 			}
@@ -311,11 +315,11 @@ void UTCATSubsystem::Tick(float DeltaTime)
 				}
 				else
 				{
-					UE_LOG(LogTCAT, Log, TEXT("[TCAT Subsystem] Failed to Satisfy Switching Condition to %s mode. Satisfaction Ratio: %.2f%% (Threshold: %.2f%%).")
+					UE_LOG(LogTCAT, Verbose, TEXT("[TCAT Subsystem] Failed to Satisfy Switching Condition to %s mode. Satisfaction Ratio: %.2f%% (Threshold: %.2f%%).")
 						, TargetAdaptiveRefreshModeStr, SatisfactionRatio * 100.0f, CachedRequiredSatisfactionRatio * 100.0f);
 				}
 
-				UE_LOG(LogTCAT, Verbose, TEXT("[TCAT Subsystem] Adaptive Mode Switching Check Complete. Satisfaction Ratio: %.2f%% (Threshold: %.2f%%). SatisfiedFrameCount: %u, UnsatisfiedFrameCount: %u. WaitTimeMs: %.2f")
+				UE_LOG(LogTCAT, VeryVerbose, TEXT("[TCAT Subsystem] Adaptive Mode Switching Check Complete. Satisfaction Ratio: %.2f%% (Threshold: %.2f%%). SatisfiedFrameCount: %u, UnsatisfiedFrameCount: %u. WaitTimeMs: %.2f")
 					, SatisfactionRatio * 100.0f, CachedRequiredSatisfactionRatio * 100.0f, SatisfiedFrameCount, UnsatisfiedFrameCount, WaitTimeMs);
 
 				ElapsedTimeSinceConditionCheckStarted = 0.0;
@@ -325,13 +329,13 @@ void UTCATSubsystem::Tick(float DeltaTime)
 				if (!bIsMeasuringCPU && bRefreshWithGPUForAdaptiveVolumes 
 					&& FMath::Abs(static_cast<int64>(LastMeasuredTotalSourceCount) - static_cast<int64>(CurrentTotalSourceCount)) > static_cast<int64>(CachedSourceCountChangeThreshold))
 				{
-					UE_LOG(LogTCAT, Log, TEXT("[TCAT Subsystem] Significant change in total source count detected (%llu -> %llu). Forcing re-measurement of CPU mode.")
+					UE_LOG(LogTCAT, Verbose, TEXT("[TCAT Subsystem] Significant change in total source count detected (%llu -> %llu). Forcing re-measurement of CPU mode.")
 						, LastMeasuredTotalSourceCount, CurrentTotalSourceCount);
 					bShouldMeasureCPUMode = true;
 				}
 				else
 				{
-					UE_LOG(LogTCAT, Verbose, TEXT("[TCAT Subsystem] LastMeasuredTotalSourceCount: %llu, CurrentTotalSourceCount: %llu"), LastMeasuredTotalSourceCount, CurrentTotalSourceCount);
+					UE_LOG(LogTCAT, VeryVerbose, TEXT("[TCAT Subsystem] LastMeasuredTotalSourceCount: %llu, CurrentTotalSourceCount: %llu"), LastMeasuredTotalSourceCount, CurrentTotalSourceCount);
 				}
 			}
 		}
@@ -617,7 +621,7 @@ int32 UTCATSubsystem::GetCurveID(UCurveFloat* InCurve)
 
 #if WITH_EDITOR
 	// Fallback
-	UE_LOG(LogTCAT, Warning, TEXT("TCAT: Curve '%s' is not in %s! It will be ignored."), *InCurve->GetName(), *CURVE_SEARCH_PATH);
+	UE_LOG(LogTCAT, Warning, TEXT("TCAT: Curve '%s' is not in %s! It will be ignored."), *InCurve->GetName(), *CachedCurveSearchPath);
 #endif
 	return 0; 
 }
@@ -630,6 +634,37 @@ uint32 UTCATSubsystem::RequestBatchQuery(FTCATBatchQuery&& NewQuery)
 void UTCATSubsystem::CancelBatchQuery(uint32 QueryID)
 {
 	QueryProcessor.CancelQuery(QueryID);
+}
+
+FTCATQueryBuilder UTCATSubsystem::MakeQuery(FName MapTag)
+{
+	return FTCATQueryBuilder(this, MapTag);
+}
+
+bool UTCATSubsystem::ProcessQueryImmediate(FTCATBatchQuery& InQuery, FTCATSingleResult& OutResult)
+{
+	QueryProcessor.ProcessQueryImmediate(InQuery);
+
+	if (InQuery.OutResults.Num() > 0)
+	{
+		OutResult = InQuery.OutResults[0];
+		return true;
+	}
+    
+	return false;
+}
+
+bool UTCATSubsystem::ProcessQueryImmediateMulti(FTCATBatchQuery& InQuery, TArray<FTCATSingleResult>& OutResults)
+{
+	QueryProcessor.ProcessQueryImmediate(InQuery);
+
+	if (InQuery.OutResults.Num() > 0)
+	{
+		OutResults = MoveTemp(InQuery.OutResults);
+		return true;
+	}
+
+	return false;
 }
 
 void UTCATSubsystem::VLogInfluence()
@@ -706,7 +741,7 @@ FTCATInfluenceDispatchParams UTCATSubsystem::CreateDispatchParams(ATCATInfluence
     int32 EffectiveMask = RequestedProjectionMask;
     if (!Params.GlobalHeightMapRHI.IsValid())
     {
-        EffectiveMask &= ~(int32)ETCATProjectionFlag::InfluenceHalfHeight;
+        EffectiveMask &= ~(int32)ETCATProjectionFlag::MaxInfluenceHeight;
     }
     Params.ProjectionFlags = EffectiveMask;
     Params.AtlasWidth = ATLAS_TEXTURE_WIDTH;
@@ -735,9 +770,9 @@ FTCATCompositeDispatchParams UTCATSubsystem::CreateCompositeDispatchParams(ATCAT
     FTCATCompositeDispatchParams Params;
 
     Params.VolumeName = Volume->GetName();
-	if (CompositeLayer.LogicAsset)
+	if (CompositeLayer.CompositeRecipe)
 	{
-		Params.Operations = CompositeLayer.LogicAsset->Operations;
+		Params.Operations = CompositeLayer.CompositeRecipe->Operations;
 	}
 	else
 	{
@@ -911,10 +946,19 @@ void UTCATSubsystem::RetrieveGPUResults(ATCATInfluenceVolume* Volume)
 						// Create new source with current position
 						FTCATInfluenceSource NewSource = OldSource;
 						NewSource.WorldLocation = CurrentLocation;
+						// Compute MaxInfluenceZ from bounding box top + height offset
+						if (AActor* Owner = Comp->GetOwner())
+						{
+							NewSource.MaxInfluenceZ = Owner->GetComponentsBoundingBox().Max.Z + NewSource.InfluenceZLimitOffset;
+						}
+						else
+						{
+							NewSource.MaxInfluenceZ = TNumericLimits<float>::Max();
+						}
 						NewSources.Add(NewSource);
 
-						UE_LOG(LogTCAT, Verbose,
-							TEXT("Layer[%s] Component[%s] position error. Proceed position correction: %.2f cm. tolerance: %.2f cm."),
+						UE_LOG(LogTCAT, VeryVerbose,
+							TEXT("Map[%s] Component[%s] position error. Proceed position correction: %.2f cm. tolerance: %.2f cm."),
 							*LayerTag.ToString(),
 							*Comp->GetOwner()->GetName(),
 							FMath::Sqrt(DistanceSq),
@@ -940,9 +984,9 @@ FTCATCompositeDispatchParams UTCATSubsystem::CreateCompositeDispatchParamsForCPU
 
 	Params.VolumeName = Volume->GetName();
 
-	if (CompositeLayer.LogicAsset)
+	if (CompositeLayer.CompositeRecipe)
 	{
-		Params.Operations = CompositeLayer.LogicAsset->Operations;
+		Params.Operations = CompositeLayer.CompositeRecipe->Operations;
 	}
 	else
 	{
@@ -1029,7 +1073,7 @@ void UTCATSubsystem::FixInfluenceForMovedComponents(
 	FTCATInfluenceDispatcher::DispatchCPU_Partial(FixParams, OldSources, NewSources);
 
 	UE_LOG(LogTCAT, Log,
-		TEXT("Fixed %d components for Layer[%s] using CPU partial update"),
+		TEXT("Fixed %d components for Map[%s] using CPU partial update"),
 		OldSources.Num(), *LayerTag.ToString()
 	);
 
@@ -1045,8 +1089,6 @@ void UTCATSubsystem::FixInfluenceForMovedComponents(
 	for (const FTCATInfluenceSource& Src : NewSources)
 	{
 		const FVector SourcePos(Src.WorldLocation);
-		const float RadiusSq = Src.InfluenceRadius * Src.InfluenceRadius;
-
 		const FVector2f SourceXY(SourcePos.X, SourcePos.Y);
 		const FVector2f RelativePos = SourceXY - MapOriginXY;
 
@@ -1075,14 +1117,14 @@ void UTCATSubsystem::FixInfluenceForMovedComponents(
 	// Find and update composite layers that use this base layer
 	for (const FTCATCompositeLayerConfig& CompositeLayer : Volume->CompositeLayers)
 	{
-		if (!CompositeLayer.LogicAsset || CompositeLayer.LogicAsset->Operations.Num() == 0)
+		if (!CompositeLayer.CompositeRecipe || CompositeLayer.CompositeRecipe->Operations.Num() == 0)
 		{
 			continue;
 		}
 
 		// Check if this composite layer uses the corrected base layer
 		bool bUsesThisLayer = false;
-		for (const FTCATCompositeOperation& Op : CompositeLayer.LogicAsset->Operations)
+		for (const FTCATCompositeOperation& Op : CompositeLayer.CompositeRecipe->Operations)
 		{
 			if (Op.InputLayerTag == LayerTag)
 			{
@@ -1121,7 +1163,7 @@ void UTCATSubsystem::InitializeStaticGlobalCurveAtlas()
     FARFilter Filter;
     Filter.ClassPaths.Add(UCurveFloat::StaticClass()->GetClassPathName());
     Filter.bRecursivePaths = true;
-    Filter.PackagePaths.Add(*CURVE_SEARCH_PATH); // "/TCAT/Curves"
+    Filter.PackagePaths.Add(*CachedCurveSearchPath); // Curated plugin content path
 
     AssetRegistryModule.Get().GetAssets(Filter, AssetDataList);
 
@@ -1179,7 +1221,9 @@ void UTCATSubsystem::InitializeStaticGlobalCurveAtlas()
 			GlobalAtlasPixelData[i] = (float)i / (float)(AtlasWidth - 1);
 		}
 	}
-	
+
+    QueryProcessor.SetCurveAtlasData(&GlobalAtlasPixelData, ATLAS_TEXTURE_WIDTH);
+
     ENQUEUE_RENDER_COMMAND(CreateStaticAtlas)(
         [this, PixelData = GlobalAtlasPixelData, AtlasWidth, AtlasHeight](FRHICommandListImmediate& RHICmdList)
         {

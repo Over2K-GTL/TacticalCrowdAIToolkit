@@ -1,6 +1,5 @@
 ﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
 
-
 #include "Query/TCATAsyncQueryAction.h"
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
@@ -10,221 +9,170 @@
 
 TArray<UTCATAsyncSearchAction*> UTCATAsyncSearchAction::ActionPool;
 
-bool UTCATAsyncSearchAction::TryResolveQueryCenter(FVector& OutCenter) const
-{
-	if (TargetComponent.IsValid())
-	{
-		OutCenter = TargetComponent->ResolveWorldLocation() +  WorldPosOffset;
-		return true;
-	}
-
-	if (!WorldContext)
-	{
-		return false;
-	}
-
-	if (const AActor* SourceActor = Cast<AActor>(WorldContext))
-	{
-		OutCenter = SourceActor->GetActorLocation()  +  WorldPosOffset;
-		return true;
-	}
-
-	if (const UActorComponent* SourceActorComponent = Cast<UActorComponent>(WorldContext))
-	{
-		if (const AActor* Owner = SourceActorComponent->GetOwner())
-		{
-			OutCenter = Owner->GetActorLocation()  +  WorldPosOffset;
-			return true;
-		}
-	}
-
-	return false;
-}
-
 UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchHighestValue(UObject* WorldContextObject, FName MapTag,
-UTCATInfluenceComponent* SourceComponent, float SearchRadius, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker, bool bDebug,
-  ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride, const FVector& WorldPosToQueryOverride)
+	FVector InSearchCenter, float InSearchRadius, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZvalue, UCurveFloat* DistanceBiasCurve, float DistanceBiasWeight, UTCATInfluenceComponent* InInfluenceComponent)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
-    
-	Action->TargetComponent = SourceComponent;
-	Action->TargetMapTag = MapTag;
-	Action->SearchRadius = SearchRadius;
 
-	Action->bSubtractSelfInfluence = bSubtractSelfInfluence;
+	Action->TargetMapTag = MapTag;
+	Action->SearchCenter = InSearchCenter;
+	Action->SearchRadius = InSearchRadius;
+
 	Action->bExcludeUnreachableLocation = bExcludeUnreachableLocation;
 	Action->bTraceVisibility = bTraceVisibility;
-	Action->bIgnoreZValue = bIgnoreZValue;
-
-	Action->DistanceBiasType = DistanceBiasType;
+	Action->bIgnoreZValue = bIgnoreZvalue;
+	
+	Action->DistanceBiasCurve = DistanceBiasCurve;
 	Action->DistanceBiasWeight = DistanceBiasWeight;
-	Action->HalfHeightOverride = HalfHeightOverride;
-	Action-> WorldPosOffset = WorldPosToQueryOverride;
-	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
-	Action->bDebugQuery = bDebug;
 
+	Action->TargetComponent = InInfluenceComponent;
 	Action->SelectedQueryType = ETCATQueryType::HighestValue;
 
 	return Action;
 }
 
 UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchLowestValue(UObject* WorldContextObject, FName MapTag,
-UTCATInfluenceComponent* SourceComponent, float SearchRadius, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker, bool bDebug,
-  ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride, const FVector& WorldPosToQueryOverride)
+	FVector InSearchCenter, float InSearchRadius, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZvalue, UCurveFloat* DistanceBiasCurve, float DistanceBiasWeight, UTCATInfluenceComponent* InInfluenceComponent)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
 
-	Action->TargetComponent = SourceComponent;
 	Action->TargetMapTag = MapTag;
-	Action->SearchRadius = SearchRadius;
+	Action->SearchCenter = InSearchCenter;
+	Action->SearchRadius = InSearchRadius;
 
-	Action->bSubtractSelfInfluence = bSubtractSelfInfluence;
 	Action->bExcludeUnreachableLocation = bExcludeUnreachableLocation;
 	Action->bTraceVisibility = bTraceVisibility;
-	Action->bIgnoreZValue = bIgnoreZValue;
-
-	Action->DistanceBiasType = DistanceBiasType;
-	Action->DistanceBiasWeight = DistanceBiasWeight;
-	Action->HalfHeightOverride = HalfHeightOverride;
-	Action-> WorldPosOffset = WorldPosToQueryOverride;
-	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
-	Action->bDebugQuery = bDebug;
+	Action->bIgnoreZValue = bIgnoreZvalue;
 	
+	Action->DistanceBiasCurve = DistanceBiasCurve;
+	Action->DistanceBiasWeight = DistanceBiasWeight;
+	  
+	Action->TargetComponent = InInfluenceComponent;
 	Action->SelectedQueryType = ETCATQueryType::LowestValue;
 
 	return Action;
 }
 
-UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchCondition(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent,
-float SearchRadius, float CompareValue, ETCATCompareType CompareType, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker, bool bDebug,
-ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride, const FVector& WorldPosToQueryOverride)
+UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchCondition(UObject* WorldContextObject, FName MapTag,
+	FVector InSearchCenter, float InSearchRadius, float CompareValue, ETCATCompareType CompareType,
+	bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZvalue, UCurveFloat* DistanceBiasCurve, float DistanceBiasWeight, UTCATInfluenceComponent* InInfluenceComponent)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
-    
-	Action->TargetComponent = SourceComponent;
+
 	Action->TargetMapTag = MapTag;
-	Action->SearchRadius = SearchRadius;
-    
+	Action->SearchCenter = InSearchCenter;
+	Action->SearchRadius = InSearchRadius;
+	
 	Action->TargetCompareValue = CompareValue;
 	Action->TargetCompareType = CompareType;
 
-	Action->bSubtractSelfInfluence = bSubtractSelfInfluence;
 	Action->bExcludeUnreachableLocation = bExcludeUnreachableLocation;
 	Action->bTraceVisibility = bTraceVisibility;
-	Action->bIgnoreZValue = bIgnoreZValue;
-
-	Action->DistanceBiasType = DistanceBiasType;
-	Action->DistanceBiasWeight = DistanceBiasWeight;
-	Action->HalfHeightOverride = HalfHeightOverride;
-	Action-> WorldPosOffset = WorldPosToQueryOverride;
-	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
-	Action->bDebugQuery = bDebug;
+	Action->bIgnoreZValue = bIgnoreZvalue;
 	
+	Action->DistanceBiasCurve = DistanceBiasCurve;
+	Action->DistanceBiasWeight = DistanceBiasWeight;
+
+	Action->TargetComponent = InInfluenceComponent;
+
 	Action->SelectedQueryType = ETCATQueryType::Condition;
 
 	return Action;
 }
 
-UTCATAsyncSearchAction* UTCATAsyncSearchAction::GetValueAtComponent(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent, bool bSubtractSelfInfluence, bool bUseRandomizedTiebreaker, bool bDebug,
-		bool bIgnoreZValue, float HalfHeightOverride,const FVector& WorldPosToQueryOverride)
+UTCATAsyncSearchAction* UTCATAsyncSearchAction::GetValueAtComponent(UObject* WorldContextObject, FName MapTag, FVector SamplePosition)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
-    
-	Action->TargetComponent = SourceComponent;
-	Action->TargetMapTag = MapTag;
 
-	Action->bSubtractSelfInfluence = bSubtractSelfInfluence;
-	Action->bIgnoreZValue = bIgnoreZValue;
-	Action->HalfHeightOverride = HalfHeightOverride;
-	Action-> WorldPosOffset = WorldPosToQueryOverride;
-	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
-	Action->bDebugQuery = bDebug;
+	Action->TargetMapTag = MapTag;
+	Action->SearchCenter = SamplePosition;
+	Action->SearchRadius = 0.0f;
+
+	Action->bExcludeUnreachableLocation = false;
+	Action->bTraceVisibility = false;
+	Action->bIgnoreZValue = true;
+
+	Action->DistanceBiasCurve = nullptr;
+	Action->DistanceBiasWeight = 0.0f;
 
 	Action->SelectedQueryType = ETCATQueryType::ValueAtPos;
 
 	return Action;
 }
 
-UTCATAsyncSearchAction* UTCATAsyncSearchAction::GetInfluenceGradient(UObject* WorldContextObject, FName MapTag,
-	UTCATInfluenceComponent* SourceComponent, bool bUseRandomizedTiebreaker, bool bDebug, float SearchRadius,
-	float LookAheadDistance, bool bSubtractSelfInfluence, bool bIgnoreZValue, float HalfHeightOverride, const FVector& WorldPosToQueryOverride)
+UTCATAsyncSearchAction* UTCATAsyncSearchAction::GetInfluenceGradient(UObject* WorldContextObject, FName MapTag, FVector InSearchCenter, float InSearchRadius, float LookAheadDistance, bool bIgnoreZvalue, UTCATInfluenceComponent* InInfluenceComponent)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
-    
-	Action->TargetComponent = SourceComponent;
+
 	Action->TargetMapTag = MapTag;
-	Action->SearchRadius = SearchRadius;
+	Action->SearchCenter = InSearchCenter;
+	Action->SearchRadius = InSearchRadius;
+	
+	Action->TargetCompareValue = LookAheadDistance;
+	Action->TargetCompareType = ETCATCompareType::Greater;
 
-	// Reuse CompareValue
-	Action->TargetCompareValue = LookAheadDistance; 
+	Action->bExcludeUnreachableLocation = false;
+	Action->bTraceVisibility = false;
+	Action->bIgnoreZValue = bIgnoreZvalue;
 
-	Action->bSubtractSelfInfluence = bSubtractSelfInfluence;
-	Action->bIgnoreZValue = bIgnoreZValue;
-	Action->HalfHeightOverride = HalfHeightOverride;
-	Action-> WorldPosOffset = WorldPosToQueryOverride;
-	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
-	Action->bDebugQuery = bDebug;
+	Action->DistanceBiasCurve = nullptr;
+	Action->DistanceBiasWeight = 0.0f;
+
+	Action->TargetComponent = InInfluenceComponent;
 
 	Action->SelectedQueryType = ETCATQueryType::Gradient;
 
 	return Action;
 }
 
-UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchHighestInCondition(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent,
-float SearchRadius, float CompareValue, ETCATCompareType CompareType, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue,
-ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride, const FVector& WorldPosToQueryOverride, bool bUseRandomizedTiebreaker, bool bDebug)
+UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchHighestInCondition(UObject* WorldContextObject, FName MapTag, FVector InSearchCenter, float InSearchRadius, float CompareValue, ETCATCompareType CompareType,
+	bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZvalue, UCurveFloat* DistanceBiasCurve, float DistanceBiasWeight, UTCATInfluenceComponent* InInfluenceComponent)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
-    
-	Action->TargetComponent = SourceComponent;
-	Action->TargetMapTag = MapTag;
-	Action->SearchRadius = SearchRadius;
 
+	Action->TargetMapTag = MapTag;
+	Action->SearchCenter = InSearchCenter;
+	Action->SearchRadius = InSearchRadius;
+	
 	Action->TargetCompareValue = CompareValue;
 	Action->TargetCompareType = CompareType;
 
-	Action->bSubtractSelfInfluence = bSubtractSelfInfluence;
 	Action->bExcludeUnreachableLocation = bExcludeUnreachableLocation;
 	Action->bTraceVisibility = bTraceVisibility;
-	Action->bIgnoreZValue = bIgnoreZValue;
+	Action->bIgnoreZValue = bIgnoreZvalue;
 	
-	Action->DistanceBiasType = DistanceBiasType;
+	Action->DistanceBiasCurve = DistanceBiasCurve;
 	Action->DistanceBiasWeight = DistanceBiasWeight;
-	Action->HalfHeightOverride = HalfHeightOverride;
-	Action-> WorldPosOffset = WorldPosToQueryOverride;
-	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
-	Action->bDebugQuery = bDebug;
+
+	Action->TargetComponent = InInfluenceComponent;
 	
 	Action->SelectedQueryType = ETCATQueryType::HighestValueInCondition;
 
 	return Action;
 }
 
-UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchLowestInCondition(UObject* WorldContextObject, FName MapTag, UTCATInfluenceComponent* SourceComponent,
-float SearchRadius, float CompareValue, ETCATCompareType CompareType, bool bSubtractSelfInfluence, bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZValue, bool bUseRandomizedTiebreaker, bool bDebug,
-ETCATDistanceBias DistanceBiasType, float DistanceBiasWeight, float HalfHeightOverride, const FVector& WorldPosToQueryOverride)
+UTCATAsyncSearchAction* UTCATAsyncSearchAction::SearchLowestInCondition(UObject* WorldContextObject, FName MapTag,
+	FVector InSearchCenter, float InSearchRadius, float CompareValue, ETCATCompareType CompareType,
+	bool bExcludeUnreachableLocation, bool bTraceVisibility, bool bIgnoreZvalue, UCurveFloat* DistanceBiasCurve, float DistanceBiasWeight, UTCATInfluenceComponent* InInfluenceComponent)
 {
 	UTCATAsyncSearchAction* Action = GetOrCreateAction(WorldContextObject);
-    
-	Action->TargetComponent = SourceComponent;
-	Action->TargetMapTag = MapTag;
-	Action->SearchRadius = SearchRadius;
 
+	Action->TargetMapTag = MapTag;
+	Action->SearchCenter = InSearchCenter;
+	Action->SearchRadius = InSearchRadius;
+	
 	Action->TargetCompareValue = CompareValue;
 	Action->TargetCompareType = CompareType;
 
-	Action->bSubtractSelfInfluence = bSubtractSelfInfluence;
 	Action->bExcludeUnreachableLocation = bExcludeUnreachableLocation;
 	Action->bTraceVisibility = bTraceVisibility;
-	Action->bIgnoreZValue = bIgnoreZValue;
+	Action->bIgnoreZValue = bIgnoreZvalue;
 	
-	Action->DistanceBiasType = DistanceBiasType;
+	Action->DistanceBiasCurve = DistanceBiasCurve;
 	Action->DistanceBiasWeight = DistanceBiasWeight;
-	Action->HalfHeightOverride = HalfHeightOverride;
-	Action-> WorldPosOffset = WorldPosToQueryOverride;
-	Action->bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
-	Action->bDebugQuery = bDebug;
 
+	Action->TargetComponent = InInfluenceComponent;
+	
 	Action->SelectedQueryType = ETCATQueryType::LowestValueInCondition;
 
 	return Action;
@@ -255,85 +203,61 @@ void UTCATAsyncSearchAction::Activate()
 			ContextActor = ContextComp->GetOwner();
 		}
 	}
-	if (!TargetComponent.IsValid() && ContextActor)
+    
+	if (ContextActor && !TargetComponent.IsValid())
 	{
 		TargetComponent = ContextActor->FindComponentByClass<UTCATInfluenceComponent>();
-	}
-	AActor* DebugActor = TargetComponent.IsValid() ? TargetComponent->GetOwner() : ContextActor;
-	
-	FVector FinalCenter;
-	if (!TryResolveQueryCenter(FinalCenter))
-	{
-		OnFailed.Broadcast();
-		FinishAndRelease();
-		return;
 	}
 	
 	ATCATInfluenceVolume* Volume = Subsystem->GetInfluenceVolume(TargetMapTag);
 	// -------------------------------------------------------------------------
 	// Data Extraction
 	// -------------------------------------------------------------------------
-	// Default Value
-    const bool bComponentHasLayer = TargetComponent.IsValid() && TargetComponent->HasInfluenceLayer(TargetMapTag);
-    float ResolvedHalfHeight = HalfHeightOverride;
-    if (ResolvedHalfHeight < 0.0f)
-    {
-        if (bComponentHasLayer)
-        {
-            ResolvedHalfHeight = TargetComponent->GetInfluenceHalfHeight(TargetMapTag);
-        }
-        else
-        {
-            ResolvedHalfHeight = 0.0f;
-        }
-    }
-	
 	FTCATBatchQuery Query;
-	
+
     Query.Type = SelectedQueryType;
 	Query.MapTag = TargetMapTag;
+	
+    Query.SearchCenter = SearchCenter;
 	Query.SearchRadius = SearchRadius;
+
 	Query.CompareValue = TargetCompareValue;
 	Query.CompareType = TargetCompareType;
-
-	// Extract from Component
-    Query.Center = FinalCenter;
-	Query.InfluenceHalfHeight = ResolvedHalfHeight;
 	
     Query.bExcludeUnreachableLocation = bExcludeUnreachableLocation;
     Query.bTraceVisibility = bTraceVisibility;
-    Query.bIgnoreZValue = bIgnoreZValue;
-
-	Query.DistanceBiasType = DistanceBiasType;
-	Query.DistanceBiasWeight = DistanceBiasWeight;
+	Query.bIgnoreZValue = bIgnoreZValue;
 	
+	Query.DistanceBiasCurve = DistanceBiasCurve;
+	Query.DistanceBiasCurveID = DistanceBiasCurve.IsValid() ? Subsystem->GetCurveID(DistanceBiasCurve.Get()) : INDEX_NONE;
+	Query.DistanceBiasWeight = DistanceBiasWeight;
 #if ENABLE_VISUAL_LOG
-	Query.DebugInfo.bEnabled = bDebugQuery;
-	Query.DebugInfo.DebugOwner = DebugActor;
+	Query.DebugInfo.DebugOwner = ContextActor;
 #endif
-	Query.bUseRandomizedTiebreaker = bUseRandomizedTiebreaker;
 	
 	Query.MaxResults = 1;
-    Query.RandomSeed = HashCombineFast(GetTypeHash(Query.MapTag), GetTypeHash(Query.Center));
+    Query.RandomSeed = HashCombineFast(GetTypeHash(Query.MapTag), GetTypeHash(Query.SearchCenter));
     Query.RandomSeed = HashCombineFast(Query.RandomSeed, (uint32)GFrameCounter);
 
 	Query.Curve = nullptr;
 	Query.SelfRemovalFactor = 0.0f;
 	Query.InfluenceRadius = 0.0f;
 
-	if (bSubtractSelfInfluence && TargetComponent.IsValid() && Volume)
+	if (TargetComponent.IsValid() && Volume)
 	{
 		FTCATSelfInfluenceResult SelfResult = TargetComponent->GetSelfInfluenceResult(TargetMapTag, Volume);
 		
 		if (SelfResult.IsValid())
 		{
 			Query.Curve = SelfResult.Curve;
+			Query.SelfCurveID = SelfResult.CurveTypeIndex;
 			Query.SelfRemovalFactor = SelfResult.FinalRemovalFactor;
 			Query.InfluenceRadius = SelfResult.InfluenceRadius;
+			Query.SelfOrigin = SelfResult.SourceLocation;
 		}
 	}
 	
-	Query.OnComplete = [this](const TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& Results)
+	Query.OnComplete = [this](const FTCATQueryResultArray& Results)
 	{
 	   if (Results.Num() > 0)
 	   {
@@ -377,9 +301,23 @@ UTCATAsyncSearchAction* UTCATAsyncSearchAction::GetOrCreateAction(UObject* World
 	}
 
 	Action->WorldContext = WorldContextObject;
+	Action->TargetComponent.Reset();
+	Action->TargetComponent = ResolveInfluenceComponentFromContext(WorldContextObject);
+
+	Action->SearchCenter = FVector::ZeroVector;
+	Action->SearchRadius = 0.0f;
+	
+	Action->TargetCompareValue = 0.0f;
+	Action->TargetCompareType = ETCATCompareType::Greater;
+	
+	Action->bExcludeUnreachableLocation = false;
+	Action->bTraceVisibility = false;
+	
+	Action->DistanceBiasCurve = nullptr;
+	Action->DistanceBiasWeight = 0.0f;
+	
 	return Action;
 }
-
 void UTCATAsyncSearchAction::FinishAndRelease()
 {
 	SetReadyToDestroy();
@@ -387,7 +325,38 @@ void UTCATAsyncSearchAction::FinishAndRelease()
 	OnSuccess.Clear();
 	OnFailed.Clear();
 
-	bDebugQuery = false;
+	WorldContext = nullptr;
+	TargetComponent.Reset();
+	SearchCenter = FVector::ZeroVector;
+	SearchRadius = 0.0f;
+	TargetCompareValue = 0.0f;
+	TargetCompareType = ETCATCompareType::Greater;
+	bExcludeUnreachableLocation = false;
+	bTraceVisibility = false;
+	DistanceBiasCurve = nullptr;
+	DistanceBiasWeight = 0.0f;
 
 	ActionPool.Add(this);
+}
+
+UTCATInfluenceComponent* UTCATAsyncSearchAction::ResolveInfluenceComponentFromContext(UObject* Context)
+{
+	if (UTCATInfluenceComponent* DirectComp = Cast<UTCATInfluenceComponent>(Context))
+	{
+		return DirectComp;
+	}
+
+	if (const UActorComponent* ActorComp = Cast<UActorComponent>(Context))
+	{
+		if (const AActor* Owner = ActorComp->GetOwner())
+		{
+			return Owner->FindComponentByClass<UTCATInfluenceComponent>();
+		}
+	}
+	else if (const AActor* Actor = Cast<AActor>(Context))
+	{
+		return Actor->FindComponentByClass<UTCATInfluenceComponent>();
+	}
+
+	return nullptr;
 }

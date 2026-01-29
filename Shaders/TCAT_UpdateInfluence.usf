@@ -33,11 +33,11 @@ void main(uint3 DispatchThreadId : SV_DispatchThreadID)
         // if source is far from this cell, then skip
         if (distance(MyWorldPos, Src.WorldLocation) > Src.InfluenceRadius) continue;
 
-        // Influence Z height Limit
-        if ((ProjectionFlags & TCAT_PROJECTION_VERTICAL_RANGE) != 0 && Src.InfluenceHalfHeight > 0.0001f)
-        {            
-            if (abs(MyWorldPos.z - Src.WorldLocation.z)> Src.InfluenceHalfHeight ) 
-                continue; 
+        // Influence Z height Limit (cells above MaxInfluenceZ are excluded)
+        if ((ProjectionFlags & TCAT_PROJECTION_VERTICAL_RANGE) != 0)
+        {
+            if (MyWorldPos.z > Src.MaxInfluenceZ)
+                continue;
         }
         
         // LoS Check

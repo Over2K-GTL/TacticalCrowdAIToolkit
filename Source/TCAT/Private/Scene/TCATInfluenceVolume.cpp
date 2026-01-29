@@ -16,6 +16,10 @@
 #include "VisualLogger/VisualLogger.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/World.h"
+#if WITH_EDITOR
+#include "Debug/TCATDebugGridComponent.h"
+#include "Debug/TCATDebugGridTypes.h"
+#endif
 
 using namespace TCATMapConstant;
 
@@ -24,13 +28,13 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("Total_Influence_Sources"), STAT_TCAT_SourceCoun
 DECLARE_MEMORY_STAT(TEXT("Influence_Grid_Memory"), STAT_TCAT_Grid_Mem, STATGROUP_TCAT);
 
 static TAutoConsoleVariable<int32> CVarTCATLogStride(
-	TEXT("TCAT.Debug.LayerLogStride"),
+	TEXT("TCAT.Debug.MapLogStride"),
 	4,
 	TEXT("Step size for Visual Logger text rendering to improve performance."),
 	ECVF_Cheat);
 
 static TAutoConsoleVariable<float> CVarTCATTextOffset(
-	TEXT("TCAT.Debug.LayerTextOffset"),
+	TEXT("TCAT.Debug.MapTextOffset"),
 	50.0f,
 	TEXT("Z-Offset for Visual Logger text to prevent clipping."),
 	ECVF_Cheat);
@@ -41,15 +45,19 @@ ATCATInfluenceVolume::ATCATInfluenceVolume()
 
 	GetBrushComponent()->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 	GetBrushComponent()->Mobility = EComponentMobility::Static;
-	
+
 #if WITH_EDITOR
 	SetIsSpatiallyLoaded(false);
+	
+	// Create debug grid component for efficient batched visualization
+	DebugGridComponent = CreateDefaultSubobject<UTCATDebugGridComponent>(TEXT("DebugGridComponent"));
+	DebugGridComponent->SetupAttachment(GetRootComponent());
 #endif
 }
 
-float ATCATInfluenceVolume::GetInfluenceFromGrid(FName LayerTag, int32 InX, int32 InY) const
+float ATCATInfluenceVolume::GetInfluenceFromGrid(FName MapTag, int32 InX, int32 InY) const
 {
-	const FTCATGridResource* TargetResource = GetLayerResource(LayerTag);
+	const FTCATGridResource* TargetResource = GetLayerResource(MapTag);
 	if (!TargetResource || TargetResource->Grid.Num() == 0) { return 0.0f; }
 	
 	const int32 Index = InY * GridResolution.X + InX;
@@ -122,7 +130,7 @@ void ATCATInfluenceVolume::BakeHeightMap()
 }
 
 #if WITH_EDITOR
-void ATCATInfluenceVolume::SyncLayersFromComponents()
+void ATCATInfluenceVolume::AddMissingLayers()
 {
 	UTCATSubsystem* Subsystem = GetTCATSubsystem();
 	if (!Subsystem)
@@ -158,6 +166,8 @@ void ATCATInfluenceVolume::SyncLayersFromComponents()
 	}
 	else
 	{
+		// Still rebuild to sync debug settings array even if no new layers
+		RebuildRuntimeMaps();
 		UE_LOG(LogTCAT, Log, TEXT("[%s] All layers are already synced."), *GetName());
 	}
 }
@@ -400,7 +410,18 @@ void ATCATInfluenceVolume::RefreshSources()
 							+ (AccelerationPredictionFactor * CurAcceleration * FMath::Square(PredictionDeltaTime) * LatestWriteReadLatencyFrames * (LatestWriteReadLatencyFrames + 1) * 0.5f);
 					}
 				}
-				
+
+				// Compute MaxInfluenceZ from bounding box top + height offset
+				if (AActor* CompOwner = Comp->GetOwner())
+				{
+					NewSource.MaxInfluenceZ = CompOwner->GetComponentsBoundingBox().Max.Z + NewSource.InfluenceZLimitOffset;
+				}
+				else
+				{
+					// No owner - use a very large value (effectively no limit)
+					NewSource.MaxInfluenceZ = TNumericLimits<float>::Max();
+				}
+
 #if !UE_BUILD_SHIPPING
 				// For Visual Debugging
 				Comp->SetPredictedLocation(NewSource.WorldLocation);
@@ -424,6 +445,8 @@ void ATCATInfluenceVolume::RefreshSources()
         if (LayerSourcesMap.Contains(Wrapper.MapTag))
         {
             FTCATInfluenceSource NewSource = Wrapper.Data;
+            // Transient sources have no owner - use WorldLocation.Z + offset as MaxInfluenceZ
+            NewSource.MaxInfluenceZ = NewSource.WorldLocation.Z + NewSource.InfluenceZLimitOffset;
             NewSource.CurveTypeIndex = Subsystem->GetCurveID(Wrapper.CurveAsset);
             LayerSourcesMap[Wrapper.MapTag].Add(NewSource);
         }
@@ -536,30 +559,67 @@ void ATCATInfluenceVolume::UpdateMemoryStats()
 
 void ATCATInfluenceVolume::RebuildRuntimeMaps()
 {
-	// 1. Base Layers
+	// 1. Build base layer lookup map
 	CachedBaseLayerMap.Empty();
 	CachedBaseLayerMap.Reserve(BaseLayerConfigs.Num());
 
-	// 2. Build Debug Settings Map (For Visualization - Base + Composite)
-	CachedDebugSettingsMap.Empty();
-	CachedDebugSettingsMap.Reserve(BaseLayerConfigs.Num() + CompositeLayers.Num());
-	
 	for (const auto& Config : BaseLayerConfigs)
 	{
 		if (!Config.BaseLayerTag.IsNone())
 		{
 			CachedBaseLayerMap.Add(Config.BaseLayerTag, Config);
-			CachedDebugSettingsMap.Add(Config.BaseLayerTag, Config.DebugSettings); // Cache Debug
 		}
 	}
 
-	// 2. Composite Layers
+	// 2. Collect all current layer tags (base + composite)
+	TSet<FName> CurrentTags;
+	CurrentTags.Reserve(BaseLayerConfigs.Num() + CompositeLayers.Num());
+
+	for (const auto& Config : BaseLayerConfigs)
+	{
+		if (!Config.BaseLayerTag.IsNone())
+		{
+			CurrentTags.Add(Config.BaseLayerTag);
+		}
+	}
 	for (const auto& Config : CompositeLayers)
 	{
 		if (!Config.CompositeLayerTag.IsNone())
 		{
-			CachedDebugSettingsMap.Add(Config.CompositeLayerTag, Config.DebugSettings); // Cache Debug
+			CurrentTags.Add(Config.CompositeLayerTag);
 		}
+	}
+
+	// 3. Sync LayerDebugSettings array with current tags
+	// Remove entries for deleted layers
+	LayerDebugSettings.RemoveAll([&CurrentTags](const FTCATLayerDebugSettings& Entry)
+	{
+		return !CurrentTags.Contains(Entry.MapTag);
+	});
+
+	// Add entries for new layers
+	TSet<FName> ExistingTags;
+	for (const auto& Entry : LayerDebugSettings)
+	{
+		ExistingTags.Add(Entry.MapTag);
+	}
+	for (const FName& Tag : CurrentTags)
+	{
+		if (!ExistingTags.Contains(Tag))
+		{
+			FTCATLayerDebugSettings NewEntry;
+			NewEntry.MapTag = Tag;
+			// Settings use default constructor values
+			LayerDebugSettings.Add(NewEntry);
+		}
+	}
+
+	// 4. Build debug settings cache from LayerDebugSettings array
+	CachedDebugSettingsMap.Empty();
+	CachedDebugSettingsMap.Reserve(LayerDebugSettings.Num());
+	for (const auto& Entry : LayerDebugSettings)
+	{
+		CachedDebugSettingsMap.Add(Entry.MapTag, Entry);
 	}
 
 	RebuildInfluenceRecipes();
@@ -605,7 +665,7 @@ void ATCATInfluenceVolume::RebuildInfluenceRecipes()
     {
        const FName& TargetTag = CompLayer.CompositeLayerTag;
 
-    	if (!CompLayer.LogicAsset)
+    	if (!CompLayer.CompositeRecipe)
     	{
     		continue; 
     	}
@@ -623,8 +683,14 @@ void ATCATInfluenceVolume::RebuildInfluenceRecipes()
        TMap<FName, FSourceState> SimulationState;
 
        // Operations Simulation
-       for (const FTCATCompositeOperation& Op : CompLayer.LogicAsset->Operations)
+       for (const FTCATCompositeOperation& Op : CompLayer.CompositeRecipe->Operations)
        {
+          if (Op.Operation == ETCATCompositeOp::Normalize)
+          {
+             SimulationState.Reset();
+             continue;
+          }
+
           // 1. Binary Ops (Input Exists)
           if (Op.Operation != ETCATCompositeOp::Invert)
           {
@@ -696,77 +762,33 @@ void ATCATInfluenceVolume::RebuildInfluenceRecipes()
 
 void ATCATInfluenceVolume::DebugDrawGrid()
 {
-	UWorld* World = GetWorld();
-    // Use the unified GridResolution instead of individual resource sizes
-    if (!World || GridResolution.X <= 0 || GridResolution.Y <= 0) return;
+#if WITH_EDITOR
+	if (!GetWorld() || GridResolution.X <= 0 || GridResolution.Y <= 0) return;
 
-	if (DrawInfluence == ETCATDebugDrawMode::None) return;
-	
-	for (const auto& Pair : InfluenceLayers)
+	// Ensure debug grid component exists (for actors placed before component was added)
+	if (!DebugGridComponent)
 	{
-		const FName& Tag = Pair.Key;
-		const FTCATGridResource& Resource = Pair.Value;
+		DebugGridComponent = NewObject<UTCATDebugGridComponent>(this, TEXT("DebugGridComponent"));
+		DebugGridComponent->SetupAttachment(GetRootComponent());
+		DebugGridComponent->RegisterComponent();
+	}
 
-		const FTCATLayerDebugSettings* Settings = CachedDebugSettingsMap.Find(Tag);
-        
-		// If no settings found, skip
-		if (!Settings) continue;
+	// Build params and delegate to component
+	FTCATDebugGridUpdateParams Params;
+	Params.DrawMode = DrawInfluence;
+	Params.InfluenceLayers = &InfluenceLayers;
+	Params.DebugSettings = &CachedDebugSettingsMap;
+	Params.HeightGrid = &HeightResource.Grid;
+	Params.Bounds = CachedBounds;
+	Params.Resolution = GridResolution;
+	Params.CellSize = CellSize;
+	Params.GridOriginZ = GetGridOrigin().Z;
+	Params.World = GetWorld();
+	Params.TextColor = DebugTextColor.ToFColor(true);
+	Params.bDrawText = bShowInfluenceValues;
 
-		// Visibility Check
-		if (DrawInfluence == ETCATDebugDrawMode::VisibleOnly && !Settings->bVisible)
-		{
-			continue;
-		}
-
-		if (Resource.Grid.Num() == 0) continue;
-
-		const float MinX = CachedBounds.Min.X;
-		const float MinY = CachedBounds.Min.Y;
-
-		const FLinearColor& PosColor = Settings->PositiveColor;
-		const FLinearColor& NegColor = Settings->NegativeColor;
-		const FLinearColor MidColor = (PosColor + NegColor) * 0.5f;
-		
-	    for (int32 Y = 0; Y < GridResolution.Y; ++Y)
-	    {
-		    for (int32 X = 0; X < GridResolution.X; ++X)
-		    {
-	    		const int32 Index = Y * GridResolution.X + X;
-		    	if (!Resource.Grid.IsValidIndex(Index)) continue;
-
-		    	const float Value = Resource.Grid[Index];
-		    	if (FMath::Abs(Value) < KINDA_SMALL_NUMBER) continue;
-
-		    	FLinearColor FinalColor;
-		    	if (Value > 0.0f)
-		    	{
-		    		// Interpolate 0 -> 1 (or Max)
-		    		// Assuming value is somewhat normalized or we clamp it for color
-		    		float Alpha = FMath::Clamp(Value, 0.0f, 1.0f); 
-		    		FinalColor = FLinearColor::LerpUsingHSV(MidColor, PosColor, Alpha);
-		    	}
-		    	else
-		    	{
-		    		// Interpolate 0 -> -1
-		    		float Alpha = FMath::Clamp(FMath::Abs(Value), 0.0f, 1.0f);
-		    		FinalColor = FLinearColor::LerpUsingHSV(MidColor, NegColor, Alpha);
-		    	}
-                
-		    	// Height Logic
-		    	float DrawZ = GetGridOrigin().Z;
-		    	if (HeightResource.Grid.IsValidIndex(Index))
-		    	{
-		    		DrawZ = HeightResource.Grid[Index];
-		    	}
-		    	DrawZ += Settings->HeightOffset;
-
-		    	FVector Center(MinX + (X + CELL_CENTER_OFFSET) * CellSize, MinY + (Y + CELL_CENTER_OFFSET) * CellSize, DrawZ);
-		    	
-	    		// Render the debug point in the 3D viewport
-		    	DrawDebugPoint(World, Center, (CellSize * CELL_CENTER_OFFSET) * 0.9f, FinalColor.ToFColor(true), false, -1.0f);
-		    }
-	    }
-    }
+	DebugGridComponent->UpdateFromVolumeData(Params);
+#endif
 }
 
 void ATCATInfluenceVolume::BatchEnsureBaseLayers(const TSet<FName>& NewTags)
@@ -788,12 +810,11 @@ void ATCATInfluenceVolume::BatchEnsureBaseLayers(const TSet<FName>& NewTags)
 		{
 			FTCATBaseLayerConfig NewConfig;
 			NewConfig.BaseLayerTag = Tag;
-			NewConfig.ProjectionMask = 0; 
-			NewConfig.DebugSettings.bVisible = true;
-			
+			NewConfig.ProjectionMask = 0;
+
 			BaseLayerConfigs.Add(NewConfig);
 			CachedBaseLayerMap.Add(Tag, NewConfig);
-			
+
 			bChanged = true;
 		}
 	}
@@ -868,7 +889,7 @@ void ATCATInfluenceVolume::VLogInfluenceVolume() const
         const FName TextLogCat(*(CatStr + TEXT(".Text")));
     	
 		const FTCATPredictionInfo& PredictionInfo = TagToPredictionInfo.FindRef(LayerName);
-        UE_VLOG(this, LogCat, Log, TEXT("Layer: %s, Frame: %llu, GPU: %s, PrevPredictionTime: %.5f, PredictionTime: %.5f"), 
+        UE_VLOG(this, LogCat, Log, TEXT("Map: %s, Frame: %llu, GPU: %s, PrevPredictionTime: %.5f, PredictionTime: %.5f"), 
             *LayerName.ToString(), GFrameCounter, bRefreshWithGPU ? TEXT("true") : TEXT("false"), 
             PredictionInfo.PrevPredictionTime, PredictionInfo.PredictionTime);
 
@@ -879,27 +900,30 @@ void ATCATInfluenceVolume::VLogInfluenceVolume() const
         constexpr int32 TargetMaxCells = 16384;         
         
         int32 AdaptiveStride = 1;
-        if (TotalCells > TargetMaxCells)
+		// Increasing the volume resolution does not necessarily increase the number of text outputs in the vlog, so comment out.
+        /*if (TotalCells > TargetMaxCells)
         {
             AdaptiveStride = FMath::CeilToInt(FMath::Sqrt((float)TotalCells / (float)TargetMaxCells));
-        }
+        }*/
 
         // ===========================================
         // Draw Heat Map! 0.<!
         // ===========================================
-        struct FInfluenceBin
+    	struct FInfluenceBin
         {
-            TArray<FVector> Vertices;
-            TArray<int32> Indices;
-            FColor Color;
+        	TArray<FVector> Vertices;
+        	TArray<int32> Indices;
+        	FColor Color;
         };
-        FInfluenceBin Bins[6];
+    	FInfluenceBin PosBins[6];
+    	FInfluenceBin NegBins[6];
+    	
         const float LerpValues[6] = {0.1f, 0.3f, 0.5f, 0.7f, 0.9f, 1.0f};
         constexpr float Threshold = 0.01f;
 
     	const FLinearColor& PosColor =  Config ? Config->PositiveColor : FLinearColor::Green;
     	const FLinearColor& NegColor =  Config ? Config->NegativeColor : FLinearColor::Red;
-    	const FLinearColor MidColor = (PosColor + NegColor) * 0.5f;
+		const FLinearColor& ZeroColor = Config ? Config->ZeroColor : FLinearColor(0.25f, 0.25f, 0.25f);
     	
     	const FLinearColor BaseTargetColor = (LayerName == TEXT("GlobalHeight")) 
 			? FLinearColor::White // Height maps go to White
@@ -907,8 +931,11 @@ void ATCATInfluenceVolume::VLogInfluenceVolume() const
                 
         for (int32 i = 0; i < 6; ++i)
         {
-            Bins[i].Vertices.Reserve(2048);
-            Bins[i].Color = FLinearColor::LerpUsingHSV(MidColor, BaseTargetColor, LerpValues[i]).ToFColor(true);
+        	PosBins[i].Vertices.Reserve(1024);
+        	PosBins[i].Color = FLinearColor::LerpUsingHSV(ZeroColor, BaseTargetColor, LerpValues[i]).ToFColor(true);
+
+        	NegBins[i].Vertices.Reserve(1024);
+        	NegBins[i].Color = FLinearColor::LerpUsingHSV(ZeroColor, NegColor, LerpValues[i]).ToFColor(true);
         }
 
         const float MinX = CachedBounds.Min.X;
@@ -926,7 +953,9 @@ void ATCATInfluenceVolume::VLogInfluenceVolume() const
                 if (!Resource->Grid.IsValidIndex(Index)) continue;
                 
                 const float Value = Resource->Grid[Index];
-                if (FMath::Abs(Value) <= Threshold) continue;
+            	const float AbsValue = FMath::Abs(Value);
+            	
+                if (AbsValue <= Threshold) continue;
 
 				// Get Height
 				float CellZ = GetGridOrigin().Z;
@@ -936,11 +965,20 @@ void ATCATInfluenceVolume::VLogInfluenceVolume() const
 				}
 				const float FinalZ = CellZ + ZOffset;
 
-                const float AbsValue = FMath::Abs(Value);
-                int32 BinIndex = FMath::Clamp(FMath::FloorToInt(AbsValue * 5.0f), 0, 5);
+            	int32 BinIndex = FMath::Clamp(FMath::FloorToInt(AbsValue * 5.0f), 0, 5);
 
-                FInfluenceBin& Bin = Bins[BinIndex];
-                const int32 StartIdx = Bin.Vertices.Num();
+            	FInfluenceBin* TargetBin = nullptr;
+            	if (Value > 0.0f)
+            	{
+            		TargetBin = &PosBins[BinIndex];
+            	}
+            	else
+            	{
+            		TargetBin = &NegBins[BinIndex];
+            	}
+            	
+            	FInfluenceBin& Bin = *TargetBin;
+            	const int32 StartIdx = Bin.Vertices.Num();
             	
                 const float AdjustedCellSize = CellSize * AdaptiveStride;
                 const float CX = MinX + x * CellSize;
@@ -975,15 +1013,25 @@ void ATCATInfluenceVolume::VLogInfluenceVolume() const
         }
     	
         int32 TotalVertices = 0;
-        for (int32 i = 0; i < 6; ++i)
-        {
-            TotalVertices += Bins[i].Vertices.Num();
-            if (Bins[i].Vertices.Num() > 0)
-            {
-                UE_VLOG_MESH(this, LogCat, Log, Bins[i].Vertices, Bins[i].Indices, Bins[i].Color, 
-                    TEXT("Grid Mesh: %s (Stride:%d)"), *LayerName.ToString(), AdaptiveStride);
-            }
-        }
+    	for (int32 i = 0; i < 6; ++i)
+    	{
+    		if (PosBins[i].Vertices.Num() > 0)
+    		{
+    			TotalVertices += PosBins[i].Vertices.Num();
+    			UE_VLOG_MESH(this, LogCat, Log, PosBins[i].Vertices, PosBins[i].Indices, PosBins[i].Color, 
+					TEXT("Grid Mesh Pos: %s (Stride:%d)"), *LayerName.ToString(), AdaptiveStride);
+    		}
+    	}
+    	
+    	for (int32 i = 0; i < 6; ++i)
+    	{
+    		if (NegBins[i].Vertices.Num() > 0)
+    		{
+    			TotalVertices += NegBins[i].Vertices.Num();
+    			UE_VLOG_MESH(this, LogCat, Log, NegBins[i].Vertices, NegBins[i].Indices, NegBins[i].Color, 
+					TEXT("Grid Mesh Neg: %s (Stride:%d)"), *LayerName.ToString(), AdaptiveStride);
+    		}
+    	}
     	
         UE_VLOG(this, LogCat, Log, TEXT("Rendered: %d/%d cells (Stride: %d, Vertices: %d)"),
             (GridResolution.X / AdaptiveStride) * (GridResolution.Y / AdaptiveStride),

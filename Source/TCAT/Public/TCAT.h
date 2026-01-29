@@ -1,4 +1,4 @@
-// Copyright 2025-2026 Over2K. All Rights Reserved.
+﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
 
 #pragma once
 #include "Modules/ModuleManager.h"
@@ -23,4 +23,7 @@ public:
 
 private:
 	TSharedPtr<FSlateStyleSet> StyleSet;
+
+	// auto-completable Console command for "stat TCAT"
+	IConsoleObject* RegisteredStatCommandPreview;
 };

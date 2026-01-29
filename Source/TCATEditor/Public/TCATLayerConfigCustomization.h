@@ -1,4 +1,4 @@
-// Copyright 2025-2026 Over2K. All Rights Reserved.
+﻿// Copyright 2025-2026 Over2K. All Rights Reserved.
 
 #pragma once
 
@@ -8,14 +8,18 @@
 class IPropertyHandle;
 class SMenuAnchor;
 class SEditableTextBox;
+class UTCATCompositeRecipe;
 
 /**
- * Customizes FTCATBaseLayerConfig (Volume) and FTCATInfluenceConfigEntry (Component).
+ * Customizes FTCATBaseLayerConfig(DisplayName = Base Map Config) (Volume) and FTCATInfluenceConfigEntry (Component).
  * Adds a [+] button that opens a comprehensive "Tag Manager Popup" (Create + List + Delete).
  */
 class FTCATLayerConfigCustomization : public IPropertyTypeCustomization
 {
 public:
+	FTCATLayerConfigCustomization();
+	virtual ~FTCATLayerConfigCustomization() override;
+	
 	static TSharedRef<IPropertyTypeCustomization> MakeInstance();
 
 	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
@@ -38,7 +42,14 @@ private:
 	/** Filters assets to allow only those in specific TCAT folder */
 	bool OnShouldFilterCurveAsset(const struct FAssetData& AssetData);
 
+	// --- Composite Asset Warning Logic ---
+	void OnCompositeAssetChanged();
+	void HandleCompositeAssetPropertyChanged(UObject* Object, struct FPropertyChangedEvent& PropertyChangedEvent);
+	void RefreshWarnings() const;
+	FText GetWarningText() const;
+	EVisibility GetWarningVisibility() const;
 private:
+	// Tag Customization Vars
 	/** Cached handle to the tag property being customized */
 	TSharedPtr<IPropertyHandle> TargetTagHandle;
 
@@ -47,4 +58,13 @@ private:
 
 	/** True if customizing a Composite Tag, False for Base Tag */
 	bool bIsCompositeTarget = false;
+
+	// Composite Asset Warning Vars
+	TSharedPtr<IPropertyHandle> CompositeAssetHandle;
+	mutable TWeakObjectPtr<UTCATCompositeRecipe> CachedCompositeAsset;
+	FDelegateHandle PropertyChangedHandle;
+
+	mutable bool bWarningsDirty = true;
+	mutable FText CachedWarningText;
+	mutable int32 CachedWarningCount = 0;
 };

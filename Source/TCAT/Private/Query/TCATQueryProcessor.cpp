@@ -8,6 +8,8 @@
 #include "HAL/IConsoleManager.h"
 #include "Scene/TCATInfluenceVolume.h"
 #include "VisualLogger/VisualLogger.h"
+#include "DrawDebugHelpers.h"
+#include "HAL/PlatformTime.h"
 
 DECLARE_CYCLE_STAT(TEXT("Query_ExecuteBatch"), STAT_TCAT_QueryExecuteBatch, STATGROUP_TCAT);
 DECLARE_DWORD_COUNTER_STAT(TEXT("Query_Count"), STAT_TCAT_QueryCount, STATGROUP_TCAT);
@@ -19,7 +21,7 @@ DECLARE_FLOAT_COUNTER_STAT(TEXT("Query_AvgCellsProcessed"), STAT_TCAT_AvgCells, 
 
 static TAutoConsoleVariable<int32> CVarTCATQueryLogStride(
 	TEXT("TCAT.Debug.QueryStride"),
-	2,
+	8,
 	TEXT("Sampling stride used when visualizing query cells."),
 	ECVF_Cheat);
 
@@ -29,16 +31,10 @@ static TAutoConsoleVariable<float> CVarTCATQueryTextOffset(
 	TEXT("Z offset applied to Visual Logger text while drawing queries."),
 	ECVF_Cheat);
 
-static TAutoConsoleVariable<int32> CVarTCATQueryDebugMode(
-	TEXT("TCAT.Debug.QueryMode"),
-	0,
-	TEXT("0 = Disabled, 1 = Selected actor only, 2 = All queries"),
-	ECVF_Cheat);
-
-static TAutoConsoleVariable<FString> CVarTCATQueryDebugActor(
-	TEXT("TCAT.Debug.QueryActor"),
-	TEXT(""),
-	TEXT("Actor name filter used when TCAT.Debug.QueryMode == 1"),
+static TAutoConsoleVariable<float> CVarTCATQueryTextDuration(
+	TEXT("TCAT.Debug.QueryTextDuration"),
+	0.5f,
+	TEXT("How long (in seconds) TCAT query debug text remains visible."),
 	ECVF_Cheat);
 
 namespace ETCATContextFlags
@@ -53,12 +49,13 @@ namespace ETCATContextFlags
     };
 }
 
-
 struct FTCATQueryContext
 {
     // [8/16 Bytes] Large types (Pointers, Vectors)
     const UCurveFloat* Curve = nullptr;
-    FVector Center;
+    const UCurveFloat* DistanceBiasCurve = nullptr;
+    FVector SearchCenter;
+    FVector SelfOrigin;
 
     // [4 Bytes] Floats & Ints
     FName MapTag;
@@ -66,7 +63,6 @@ struct FTCATQueryContext
     float InfluenceRadius;
     float SelfRemovalFactor = 0.0f;
     float CompareValue;
-    float InfluenceHalfHeight;
     
     int32 MaxResults;
     uint32 RandomSeed;
@@ -78,37 +74,38 @@ struct FTCATQueryContext
     uint8 bIgnoreZValue : 1;
     uint8 bExcludeUnreachableLocation : 1;
     uint8 bTraceVisibility : 1;
-    uint8 bUseRandomizedTiebreaker : 1;
     uint8 ContextFlags = 0;
 
-    ETCATDistanceBias DistanceBiasType = ETCATDistanceBias::None;
+    int32 SelfCurveID = INDEX_NONE;
+    int32 DistanceCurveID = INDEX_NONE;
     float DistanceBiasWeight = 0.0f;
     
     FTCATQueryContext(const struct FTCATBatchQuery& InQuery)
         : Curve(InQuery.Curve.Get())
-        , Center(InQuery.Center)
+        , DistanceBiasCurve(InQuery.DistanceBiasCurve.Get())
+        , SearchCenter(InQuery.SearchCenter)
+        , SelfOrigin(InQuery.SelfOrigin)
         , MapTag(InQuery.MapTag)
         , SearchRadius(InQuery.SearchRadius)
         , InfluenceRadius(InQuery.InfluenceRadius)
         , SelfRemovalFactor(InQuery.SelfRemovalFactor)
         , CompareValue(InQuery.CompareValue)
-        , InfluenceHalfHeight(InQuery.InfluenceHalfHeight)
         , MaxResults(InQuery.MaxResults)
         , RandomSeed(InQuery.RandomSeed)
         , CompareType(InQuery.CompareType)
         , bIgnoreZValue(InQuery.bIgnoreZValue)
         , bExcludeUnreachableLocation(InQuery.bExcludeUnreachableLocation)
         , bTraceVisibility(InQuery.bTraceVisibility)
-        , bUseRandomizedTiebreaker(InQuery.bUseRandomizedTiebreaker)
-        , DistanceBiasType(InQuery.DistanceBiasType)
+        , SelfCurveID(InQuery.SelfCurveID)
+        , DistanceCurveID(InQuery.DistanceBiasCurveID)
         , DistanceBiasWeight(InQuery.DistanceBiasWeight)
     {
-        if ((InfluenceRadius > KINDA_SMALL_NUMBER) && (FMath::Abs(SelfRemovalFactor)>KINDA_SMALL_NUMBER) && Curve)
+        if ((InfluenceRadius > KINDA_SMALL_NUMBER) && (FMath::Abs(SelfRemovalFactor)>KINDA_SMALL_NUMBER) && (SelfCurveID != INDEX_NONE || Curve))
         {
             ContextFlags |= ETCATContextFlags::HasSelfInfluence;
         }
         
-        if ((DistanceBiasType != ETCATDistanceBias::None) && (FMath::Abs(DistanceBiasWeight) > KINDA_SMALL_NUMBER))
+        if ((SearchRadius > KINDA_SMALL_NUMBER) && (FMath::Abs(DistanceBiasWeight) > KINDA_SMALL_NUMBER) && (DistanceCurveID != INDEX_NONE || DistanceBiasCurve))
         {
             ContextFlags |= ETCATContextFlags::HasDistanceBias;
         }
@@ -135,7 +132,23 @@ void FTCATQueryProcessor::Initialize(UWorld* InWorld, const TMap<FName, TSet<cla
         TickFunction.bCanEverTick = true;
         TickFunction.TickGroup = TG_DuringPhysics;
         TickFunction.bStartWithTickEnabled = true;
+        TickFunction.bTickEvenWhenPaused = true;
         TickFunction.RegisterTickFunction(CachedWorld->PersistentLevel);
+    }
+}
+
+void FTCATQueryProcessor::SetCurveAtlasData(const TArray<float>* InAtlasData, int32 InAtlasWidth)
+{
+    CurveAtlasData = InAtlasData;
+    if (CurveAtlasData && InAtlasWidth > 1)
+    {
+        CurveAtlasWidth = InAtlasWidth;
+        CurveAtlasRowCount = CurveAtlasWidth > 0 ? CurveAtlasData->Num() / CurveAtlasWidth : 0;
+    }
+    else
+    {
+        CurveAtlasWidth = 0;
+        CurveAtlasRowCount = 0;
     }
 }
 
@@ -160,29 +173,29 @@ void FTCATQueryProcessor::CancelQuery(uint32 QueryID)
 // ============================================================
 // Batch
 // ============================================================
-void FTCATQueryProcessor::DispatchResults(TArray<FTCATBatchQuery>& ResultQueue, int32 DebugMode, const FString& DebugFilter)
+void FTCATQueryProcessor::DispatchResults(TArray<FTCATBatchQuery>& ResultQueue)
 {
     for (FTCATBatchQuery& Query : ResultQueue)
     {
 #if ENABLE_VISUAL_LOG
-        if (DebugMode > 0) 
+        if (Query.DebugInfo.IsValid())
         {
-            if (ShouldDrawQueryDebug(Query, DebugMode, DebugFilter))
+            if (Query.DebugInfo.SampleStride <= 0)
             {
-                if (Query.DebugInfo.SampleStride <= 0) 
-                    Query.DebugInfo.SampleStride = CVarTCATQueryLogStride.GetValueOnGameThread();
-                
-                if (Query.DebugInfo.HeightOffset <= 0.0f)
-                    Query.DebugInfo.HeightOffset = CVarTCATQueryTextOffset.GetValueOnGameThread();
-                
-                if (Query.DebugInfo.BaseColor == FLinearColor::White)
-                {
-                    Query.DebugInfo.BaseColor = FLinearColor::Green; 
-                }
-
-                // VLog
-                VLogQueryDetails(Query);
+                Query.DebugInfo.SampleStride = CVarTCATQueryLogStride.GetValueOnGameThread();
             }
+
+            if (Query.DebugInfo.HeightOffset <= 0.0f)
+            {
+                Query.DebugInfo.HeightOffset = CVarTCATQueryTextOffset.GetValueOnGameThread();
+            }
+
+            if (Query.DebugInfo.BaseColor == FLinearColor::White)
+            {
+                Query.DebugInfo.BaseColor = FLinearColor::Green;
+            }
+
+            VLogQueryDetails(Query);
         }
 #endif
         if (Query.OnComplete)
@@ -198,13 +211,9 @@ void FTCATQueryProcessor::ExecuteBatch()
     SCOPE_CYCLE_COUNTER(STAT_TCAT_QueryExecuteBatch);
     SET_DWORD_STAT(STAT_TCAT_QueryCount, QueryQueue.Num());
 
-    const int32 DebugMode = CVarTCATQueryDebugMode.GetValueOnGameThread();
-    const FString DebugActorFilter = CVarTCATQueryDebugActor.GetValueOnGameThread();
-    
-    if (QueryQueue.Num() == 0)
-    {
-        return;
-    }
+#if ENABLE_VISUAL_LOG
+    DrawPersistentDebug();
+#endif
 
     while (QueryQueue.Num() > 0)
     {
@@ -222,8 +231,25 @@ void FTCATQueryProcessor::ExecuteBatch()
         TArray<FTCATBatchQuery> WorkingQueue = MoveTemp(QueryQueue);
         QueryQueue.Reset();
 
-        DispatchResults(WorkingQueue, DebugMode, DebugActorFilter);
+        DispatchResults(WorkingQueue);
     }
+
+#if ENABLE_VISUAL_LOG
+    DrawPersistentDebug();
+#endif
+}
+
+/**
+ * Executes a single query immediately (synchronous).
+ * This is the shared "immediate path" used by the query builder's RunImmediate* APIs.
+ *
+ * Expected behavior
+ * - Runs ProcessSingleQuery(InOutQuery) and fills InOutQuery.OutResults (if any).
+ * - Does not schedule background work; everything happens on the calling thread.
+ */
+void FTCATQueryProcessor::ProcessQueryImmediate(FTCATBatchQuery& InOutQuery)
+{
+    ProcessSingleQuery(InOutQuery);
 }
 
 void FTCATQueryProcessor::ProcessSingleQuery(FTCATBatchQuery& Query)
@@ -263,7 +289,7 @@ void FTCATQueryProcessor::ProcessSingleQuery(FTCATBatchQuery& Query)
     case ETCATQueryType::ValueAtPos:
         {
             const float Value = GetValueAtInternal(Context);
-            Query.OutResults.Add({ Value, Context.Center });
+            Query.OutResults.Add({ Value, Context.SearchCenter });
             break;
         }
 
@@ -292,7 +318,7 @@ bool FTCATQueryProcessor::SearchConditionInternal(const FTCATQueryContext& Conte
         {
             if (!Volume)
             {
-                OutPos = Context.Center;
+                OutPos = Context.SearchCenter;
                 bFound = false;
                 return true; // Stop
             }
@@ -301,7 +327,7 @@ bool FTCATQueryProcessor::SearchConditionInternal(const FTCATQueryContext& Conte
             FVector CellWorldPos = Volume->GetGridOrigin();
             CellWorldPos.X += (GridX * CellSize) + (CellSize * 0.5f);
             CellWorldPos.Y += (GridY * CellSize) + (CellSize * 0.5f);
-            CellWorldPos.Z = Context.bIgnoreZValue ? Context.Center.Z : Volume->GetGridHeightIndex({GridX, GridY});
+            CellWorldPos.Z = Context.bIgnoreZValue ? Context.SearchCenter.Z : Volume->GetGridHeightIndex({GridX, GridY});
             
             const float FinalValue = CalculateModifiedValue(Context, RawValue, CellWorldPos, GridX, GridY);
             
@@ -317,7 +343,7 @@ bool FTCATQueryProcessor::SearchConditionInternal(const FTCATQueryContext& Conte
     return bFound;
 }
 
-float FTCATQueryProcessor::SearchHighestInternal(const FTCATQueryContext& Context, TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& OutResults) const
+float FTCATQueryProcessor::SearchHighestInternal(const FTCATQueryContext& Context, FTCATQueryResultArray& OutResults) const
 {
     const int32 MaxCandidates = !Context.bExcludeUnreachableLocation ? Context.MaxResults :  
         FMath::Clamp(Context.MaxResults * CANDIDATE_OVER_SAMPLEMULTIPLIER, Context.MaxResults, CANDIDATE_HARDCAP);
@@ -353,13 +379,8 @@ float FTCATQueryProcessor::SearchHighestInternal(const FTCATQueryContext& Contex
                 FVector CellWorldPos = Volume->GetGridOrigin();
                 CellWorldPos.X += (GridX * CellSize) + (CellSize * 0.5f);
                 CellWorldPos.Y += (GridY * CellSize) + (CellSize * 0.5f);
-                CellWorldPos.Z = Context.bIgnoreZValue ? Context.Center.Z : Volume->GetGridHeightIndex({GridX, GridY});
+                CellWorldPos.Z = Context.bIgnoreZValue ? Context.SearchCenter.Z : Volume->GetGridHeightIndex({GridX, GridY});
 
-                if (Context.InfluenceHalfHeight > KINDA_SMALL_NUMBER && FMath::Abs(CellWorldPos.Z - Context.Center.Z) > Context.InfluenceHalfHeight)
-                {
-                    return false;
-                }
-                
                 const float FinalValue = CalculateModifiedValue(Context, RawValue, CellWorldPos, GridX, GridY);
 
                 if (TopCandidates.Num() >= MaxCandidates)
@@ -392,7 +413,7 @@ float FTCATQueryProcessor::SearchHighestInternal(const FTCATQueryContext& Contex
     return (OutResults.Num() > 0) ? OutResults[0].Value : -FLT_MAX;
 }
 
-float FTCATQueryProcessor::SearchLowestInternal(const FTCATQueryContext& Context, TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& OutResults) const
+float FTCATQueryProcessor::SearchLowestInternal(const FTCATQueryContext& Context, FTCATQueryResultArray& OutResults) const
 {
     const int32 MaxCandidates = !Context.bExcludeUnreachableLocation ? Context.MaxResults :  
         FMath::Clamp(Context.MaxResults * CANDIDATE_OVER_SAMPLEMULTIPLIER, Context.MaxResults, CANDIDATE_HARDCAP);
@@ -427,13 +448,8 @@ float FTCATQueryProcessor::SearchLowestInternal(const FTCATQueryContext& Context
                 FVector CellWorldPos = Volume->GetGridOrigin();
                 CellWorldPos.X += (GridX * CellSize) + (CellSize * 0.5f);
                 CellWorldPos.Y += (GridY * CellSize) + (CellSize * 0.5f);
-                CellWorldPos.Z = Context.bIgnoreZValue ? Context.Center.Z : Volume->GetGridHeightIndex({GridX, GridY});
+                CellWorldPos.Z = Context.bIgnoreZValue ? Context.SearchCenter.Z : Volume->GetGridHeightIndex({GridX, GridY});
 
-                if (Context.InfluenceHalfHeight > KINDA_SMALL_NUMBER && FMath::Abs(CellWorldPos.Z - Context.Center.Z) > Context.InfluenceHalfHeight)
-                {
-                    return false;
-                }
-                
                 const float FinalValue = CalculateModifiedValue(Context, RawValue, CellWorldPos, GridX, GridY);
 
                 if (BottomCandidates.Num() >= MaxCandidates)
@@ -470,7 +486,7 @@ float FTCATQueryProcessor::SearchLowestInternal(const FTCATQueryContext& Context
 }
 
 float FTCATQueryProcessor::SearchHighestInConditionInternal(const FTCATQueryContext& Context, 
-    TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& OutResults) const
+    FTCATQueryResultArray& OutResults) const
 {
     const int32 MaxCandidates = !Context.bExcludeUnreachableLocation ? Context.MaxResults :  
         FMath::Clamp(Context.MaxResults * CANDIDATE_OVER_SAMPLEMULTIPLIER, Context.MaxResults, CANDIDATE_HARDCAP);
@@ -507,14 +523,8 @@ float FTCATQueryProcessor::SearchHighestInConditionInternal(const FTCATQueryCont
             FVector CellWorldPos = Volume->GetGridOrigin();
             CellWorldPos.X += (GridX * CellSize) + (CellSize * 0.5f);
             CellWorldPos.Y += (GridY * CellSize) + (CellSize * 0.5f);
-            CellWorldPos.Z = Context.bIgnoreZValue ? Context.Center.Z : Volume->GetGridHeightIndex({GridX, GridY});
+            CellWorldPos.Z = Context.bIgnoreZValue ? Context.SearchCenter.Z : Volume->GetGridHeightIndex({GridX, GridY});
 
-            // Height check
-            if (Context.InfluenceHalfHeight > KINDA_SMALL_NUMBER && FMath::Abs(CellWorldPos.Z - Context.Center.Z) > Context.InfluenceHalfHeight)
-            {
-                return false;
-            }
-            
             // Calculate final value
             const float FinalValue = CalculateModifiedValue(Context, RawValue, CellWorldPos, GridX, GridY);
 
@@ -559,7 +569,7 @@ float FTCATQueryProcessor::SearchHighestInConditionInternal(const FTCATQueryCont
 }
 
 float FTCATQueryProcessor::SearchLowestInConditionInternal(const FTCATQueryContext& Context,
-    TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& OutResults) const
+    FTCATQueryResultArray& OutResults) const
 {
     const int32 MaxCandidates = !Context.bExcludeUnreachableLocation ? Context.MaxResults :  
         FMath::Clamp(Context.MaxResults * CANDIDATE_OVER_SAMPLEMULTIPLIER, Context.MaxResults, CANDIDATE_HARDCAP);
@@ -577,9 +587,6 @@ float FTCATQueryProcessor::SearchLowestInConditionInternal(const FTCATQueryConte
 
     float CurrentMaxInBottomK = FLT_MAX;
 
-
-    
-    
     ForEachCellInCircle(Context,
      [&](float RawValue, const ATCATInfluenceVolume* Volume, int32 GridX, int32 GridY) -> bool
      {
@@ -598,14 +605,8 @@ float FTCATQueryProcessor::SearchLowestInConditionInternal(const FTCATQueryConte
          FVector CellWorldPos = Volume->GetGridOrigin();
          CellWorldPos.X += (GridX * CellSize) + (CellSize * 0.5f);
          CellWorldPos.Y += (GridY * CellSize) + (CellSize * 0.5f);
-         CellWorldPos.Z = Context.bIgnoreZValue ? Context.Center.Z : Volume->GetGridHeightIndex({GridX, GridY});
-     
-         // Height check
-         if (Context.InfluenceHalfHeight > KINDA_SMALL_NUMBER && FMath::Abs(CellWorldPos.Z - Context.Center.Z) > Context.InfluenceHalfHeight)
-         {
-             return false;
-         }
-         
+         CellWorldPos.Z = Context.bIgnoreZValue ? Context.SearchCenter.Z : Volume->GetGridHeightIndex({GridX, GridY});
+              
          // Calculate final value
          const float FinalValue = CalculateModifiedValue(Context, RawValue, CellWorldPos, GridX, GridY);
 
@@ -659,13 +660,13 @@ float FTCATQueryProcessor::GetValueAtInternal(const FTCATQueryContext& Context) 
     for (ATCATInfluenceVolume* Volume : *VolumeSet)
     {
         if (!IsValid(Volume)) continue;
-        if (!Volume->GetCachedBounds().IsInside(Context.Center)) continue;
+        if (!Volume->GetCachedBounds().IsInside(Context.SearchCenter)) continue;
 
         const float InvCellSize = 1.0f / Volume->GetCellSize();
         const FVector Origin = Volume->GetGridOrigin();
 
-        const int32 GridX = FMath::Clamp(FMath::FloorToInt((Context.Center.X - Origin.X) * InvCellSize), 0, Volume->GetColumns() - 1);
-        const int32 GridY = FMath::Clamp(FMath::FloorToInt((Context.Center.Y - Origin.Y) * InvCellSize), 0, Volume->GetRows() - 1);
+        const int32 GridX = FMath::Clamp(FMath::FloorToInt((Context.SearchCenter.X - Origin.X) * InvCellSize), 0, Volume->GetColumns() - 1);
+        const int32 GridY = FMath::Clamp(FMath::FloorToInt((Context.SearchCenter.Y - Origin.Y) * InvCellSize), 0, Volume->GetRows() - 1);
         
         return Volume->GetInfluenceFromGrid(Context.MapTag, GridX, GridY);
     }
@@ -677,12 +678,15 @@ FVector FTCATQueryProcessor::GetGradientInternal(const FTCATQueryContext& Contex
     FVector GradientVector = FVector::ZeroVector;
     float TotalWeight = 0.0f;
 
-    FVector HighestPos = Context.Center;
+    FVector HighestPos = Context.SearchCenter;
     float HighestValue = -FLT_MAX;
+	float LowestValue = FLT_MAX;
 
     float CenterValue = -FLT_MAX;
     bool bFoundCenter = false;
     
+    const FVector SelfCenter = Context.SelfOrigin;
+
     ForEachCellInCircle(Context,
     [&](float RawValue, const ATCATInfluenceVolume* Volume, int32 GridX, int32 GridY) -> bool
     {
@@ -691,27 +695,27 @@ FVector FTCATQueryProcessor::GetGradientInternal(const FTCATQueryContext& Contex
         FVector CellWorldPos = Volume->GetGridOrigin();
         CellWorldPos.X += (GridX * CellSize) + (CellSize * 0.5f);
         CellWorldPos.Y += (GridY * CellSize) + (CellSize * 0.5f);
-        CellWorldPos.Z = Context.bIgnoreZValue ? Context.Center.Z : Volume->GetGridHeightIndex({GridX, GridY});
-
-        if (Context.bExcludeUnreachableLocation && !IsPositionReachable(Context.Center, CellWorldPos)) {return false;}
+        CellWorldPos.Z = Context.bIgnoreZValue ? Context.SearchCenter.Z : Volume->GetGridHeightIndex({GridX, GridY});
+        
         float FinalValue = RawValue;
-        if (Context.ContextFlags & ETCATContextFlags::HasSelfInfluence)
+        if ((Context.ContextFlags & ETCATContextFlags::HasSelfInfluence) && Context.InfluenceRadius > KINDA_SMALL_NUMBER)
         {
-            float Dist = FVector::Dist(CellWorldPos, Context.Center);
-            float CurveVal = CalculateSelfInfluence(*Context.Curve, Dist, Context.InfluenceRadius);
+            const float SelfDist = FVector::Dist(CellWorldPos, SelfCenter);
+            const float NormalizedDist = SelfDist / Context.InfluenceRadius;
+            const float CurveVal = EvaluateCurveValue(Context.Curve, Context.SelfCurveID, NormalizedDist);
             FinalValue -= (CurveVal * Context.SelfRemovalFactor);
         }
 
         if (!bFoundCenter)
         {
-             if (FVector::DistSquared(CellWorldPos, Context.Center) < (CellSize * CellSize * 0.25f))
+             if (FVector::DistSquared(CellWorldPos, Context.SearchCenter) < (CellSize * CellSize * 0.25f))
              {
                  CenterValue = FinalValue;
                  bFoundCenter = true;
              }
         }
 
-        const FVector Direction = (CellWorldPos - Context.Center).GetSafeNormal();
+        const FVector Direction = (CellWorldPos - Context.SearchCenter).GetSafeNormal();
         GradientVector += Direction * FinalValue;
         TotalWeight += FMath::Abs(FinalValue);
 
@@ -720,10 +724,14 @@ FVector FTCATQueryProcessor::GetGradientInternal(const FTCATQueryContext& Contex
             HighestValue = FinalValue;
             HighestPos = CellWorldPos;
         }
+        if (FinalValue < LowestValue)
+        {
+            LowestValue = FinalValue;
+        }
         return false;
     });
 
-    if (bFoundCenter && (HighestValue - CenterValue) <= 0.01f)
+    if (bFoundCenter && (HighestValue - CenterValue) <= 0.01f && (CenterValue - LowestValue) <= 0.01f)
     {
         return FVector::ZeroVector;
     }
@@ -731,7 +739,7 @@ FVector FTCATQueryProcessor::GetGradientInternal(const FTCATQueryContext& Contex
     FVector FinalDirection;
     if (GradientVector.SizeSquared() < GRADIENT_FALLBACK_THRESHOLDSQ && TotalWeight > 0.0f)
     {
-        FinalDirection = (HighestPos - Context.Center).GetSafeNormal();
+        FinalDirection = (HighestPos - Context.SearchCenter).GetSafeNormal();
     }
     else
     {
@@ -740,20 +748,19 @@ FVector FTCATQueryProcessor::GetGradientInternal(const FTCATQueryContext& Contex
 
     if (FMath::Abs(LookAheadDistance) > UE_KINDA_SMALL_NUMBER)
     {
-        const FVector TargetPos = Context.Center + (FinalDirection * LookAheadDistance);
+        const FVector TargetPos = Context.SearchCenter + (FinalDirection * LookAheadDistance);
         
         if (Context.bExcludeUnreachableLocation && CachedWorld)
         {
             if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(CachedWorld))
             {
                 FVector HitLocation;
-                if (NavSys->NavigationRaycast(CachedWorld, Context.Center, TargetPos, HitLocation))
+                if (NavSys->NavigationRaycast(CachedWorld, Context.SearchCenter, TargetPos, HitLocation))
                 {
                     return HitLocation;
                 }
             }
         }
-        
         return TargetPos;
     }
     return FinalDirection;
@@ -825,7 +832,7 @@ void FTCATQueryProcessor::InsertTopKLowest(const FTCATSearchCandidate& Candidate
 // ============================================================
 void FTCATQueryProcessor::FindTopReachableCandidates(const FTCATQueryContext& Context, 
     const TArray<FTCATSearchCandidate, TInlineAllocator<CANDIDATE_HARDCAP>>& Candidates, 
-    TArray<FTCATSingleResult, TInlineAllocator<INLINE_RESULT_CAPACITY>>& OutResults) const
+    FTCATQueryResultArray& OutResults) const
 {
     SCOPE_CYCLE_COUNTER(STAT_TCAT_Reachability);
     OutResults.Reset();
@@ -833,12 +840,12 @@ void FTCATQueryProcessor::FindTopReachableCandidates(const FTCATQueryContext& Co
 
     for (const auto& Candidate : Candidates)
     {
-        if (Context.bExcludeUnreachableLocation && !IsPositionReachable(Context.Center, Candidate.WorldPos))
+        if (Context.bExcludeUnreachableLocation && !IsPositionReachable(Context.SearchCenter, Candidate.WorldPos))
         {
             continue;
         }
         
-        if (Context.bTraceVisibility && !HasLineOfSight(Context.Center, Candidate.WorldPos))
+        if (Context.bTraceVisibility && !HasLineOfSight(Context.SearchCenter, Candidate.WorldPos))
         {
             continue;
         }
@@ -984,14 +991,12 @@ void FTCATQueryProcessor::ForEachCellInCircle(const FTCATQueryContext& Context,
         return;
     }
     
-    uint32 IntersectedVolumeCount = 0;
-    
     for (ATCATInfluenceVolume* Volume : *VolumeSet)
     {
         if (!IsValid(Volume)) continue;
 
         const FBox VolumeBounds = Volume->GetCachedBounds();
-        FBox SearchBox(Context.Center - FVector(Context.SearchRadius), Context.Center + FVector(Context.SearchRadius));
+        FBox SearchBox(Context.SearchCenter - FVector(Context.SearchRadius), Context.SearchCenter + FVector(Context.SearchRadius));
         if (!VolumeBounds.Intersect(SearchBox)) continue;
         
         const FTCATGridResource* LayerRes = Volume->GetLayerResource(Context.MapTag);
@@ -1006,8 +1011,8 @@ void FTCATQueryProcessor::ForEachCellInCircle(const FTCATQueryContext& Context,
         const FVector GridOrigin = Volume->GetGridOrigin();
 
         // Grid Space Conversion
-        const float GridCenterX = (Context.Center.X - GridOrigin.X) * InvCellSize;
-        const float GridCenterY = (Context.Center.Y - GridOrigin.Y) * InvCellSize;
+        const float GridCenterX = (Context.SearchCenter.X - GridOrigin.X) * InvCellSize;
+        const float GridCenterY = (Context.SearchCenter.Y - GridOrigin.Y) * InvCellSize;
         const float GridRadius = Context.SearchRadius * InvCellSize;
         const float GridRadiusSq = GridRadius * GridRadius;
 
@@ -1048,7 +1053,7 @@ void FTCATQueryProcessor::ForEachCellInCircle(const FTCATQueryContext& Context,
 #if ENABLE_VISUAL_LOG
 void FTCATQueryProcessor::VLogQueryDetails(const struct FTCATBatchQuery& Query) const
 {
-    if (!FVisualLogger::IsRecording() || !Query.DebugInfo.IsValid())
+    if (!Query.DebugInfo.IsValid() || !CachedWorld)
     {
         return;
     }
@@ -1059,6 +1064,11 @@ void FTCATQueryProcessor::VLogQueryDetails(const struct FTCATBatchQuery& Query) 
 
 void FTCATQueryProcessor::VLogQueryDetails(const FTCATQueryContext& Context, const FTCATBatchQuery& Query) const
 {
+    if (!CachedWorld)
+    {
+        return;
+    }
+
     const FTCATQueryDebugInfo& DebugInfo = Query.DebugInfo;
     const AActor* DebugOwner = DebugInfo.DebugOwner.Get();
     if (!DebugOwner)
@@ -1066,17 +1076,31 @@ void FTCATQueryProcessor::VLogQueryDetails(const FTCATQueryContext& Context, con
         return;
     }
 
+    const bool bShouldVLog = FVisualLogger::IsRecording();
     const FName LogCat = TEXT("TCAT_QueryDebug");
-    const FVector AdjustedCenter = Context.Center + FVector(0.0f, 0.0f, DebugInfo.HeightOffset);
+    const FVector AdjustedCenter = Context.SearchCenter + FVector(0.0f, 0.0f, DebugInfo.HeightOffset);
     const FColor RangeColor = DebugInfo.BaseColor.ToFColor(true);
-    const int32 ActiveStride = FMath::Max(1, DebugInfo.SampleStride > 0 ? DebugInfo.SampleStride : CVarTCATQueryLogStride.GetValueOnGameThread());
+    const int32 ActiveStride = FMath::Max(1, Query.DebugInfo.SampleStride);
     const float TextZOffset = CVarTCATQueryTextOffset.GetValueOnGameThread();
+    const float DebugDuration = FMath::Max(0.0f, CVarTCATQueryTextDuration.GetValueOnGameThread());
+    const double BaseTime = CachedWorld ? CachedWorld->GetTimeSeconds() : FPlatformTime::Seconds();
 
-    UE_VLOG_CIRCLE(DebugOwner, LogCat, Log, AdjustedCenter, FVector::UpVector, Context.SearchRadius, RangeColor,
-        TEXT("[%s] Radius=%.0f"), *Context.MapTag.ToString(), Context.SearchRadius);
+    FQueryDebugFrame& DebugFrame = LastDebugFrame;
+    DebugFrame.CellPositions.Reset();
+    DebugFrame.CellColors.Reset();
+    DebugFrame.CellTexts.Reset();
+    DebugFrame.ResultPositions.Reset();
+    DebugFrame.ResultTexts.Reset();
+    DebugFrame.ExpireTime = BaseTime + DebugDuration;
+
+    if (bShouldVLog)
+    {
+        UE_VLOG_CIRCLE(DebugOwner, LogCat, Log, AdjustedCenter, FVector::UpVector, Context.SearchRadius, RangeColor,
+            TEXT("[%s] Radius=%.0f"), *Context.MapTag.ToString(), Context.SearchRadius);
+    }
     
     ForEachCellInCircle(Context,
-        [&, ActiveStride](float RawValue, const ATCATInfluenceVolume* Volume, int32 GridX, int32 GridY) -> bool
+        [&, ActiveStride, bShouldVLog, TextZOffset](float RawValue, const ATCATInfluenceVolume* Volume, int32 GridX, int32 GridY) -> bool
         {
             if (!Volume)
             {
@@ -1092,154 +1116,193 @@ void FTCATQueryProcessor::VLogQueryDetails(const FTCATQueryContext& Context, con
             FVector CellWorldPos = Volume->GetGridOrigin();
             CellWorldPos.X += (GridX * CellSize) + (CellSize * 0.5f);
             CellWorldPos.Y += (GridY * CellSize) + (CellSize * 0.5f);
-            CellWorldPos.Z = Context.bIgnoreZValue ? Context.Center.Z : Volume->GetGridHeightIndex({GridX, GridY});
+            CellWorldPos.Z = Context.bIgnoreZValue ? Context.SearchCenter.Z : Volume->GetGridHeightIndex({GridX, GridY});
 
             const FVector VisualPos = CellWorldPos + FVector(0.0f, 0.0f, DebugInfo.HeightOffset);
-            const float Dist = FVector::Dist(CellWorldPos, Context.Center);
+            const float Dist = FVector::Dist(CellWorldPos, Context.SearchCenter);
+            const float SelfDist = FVector::Dist(CellWorldPos, Context.SelfOrigin);
 
             float SelfInf = 0.0f;
-            if (Context.ContextFlags & ETCATContextFlags::HasSelfInfluence)
+            if ((Context.ContextFlags & ETCATContextFlags::HasSelfInfluence) && Context.InfluenceRadius > KINDA_SMALL_NUMBER)
             {
-                SelfInf = CalculateSelfInfluence(*Context.Curve, Dist, Context.InfluenceRadius) * Context.SelfRemovalFactor;
+                const float NormalizedDist = SelfDist / Context.InfluenceRadius;
+                SelfInf = EvaluateCurveValue(Context.Curve, Context.SelfCurveID, NormalizedDist) * Context.SelfRemovalFactor;
             }
             
-            float BiasVal = 0.0f;
-            if (Context.ContextFlags & ETCATContextFlags::HasDistanceBias)
+            float DistBiasVal = 0.0f;
+            if ((Context.ContextFlags & ETCATContextFlags::HasDistanceBias) && Context.SearchRadius > KINDA_SMALL_NUMBER)
             {
-                const float x = FMath::Clamp(Dist / Context.SearchRadius, 0.0f, 1.0f);
-                float DistanceScore = 0.0f;
-                switch (Context.DistanceBiasType)
-                {
-                case ETCATDistanceBias::Linear: DistanceScore = 1.0f - x;
-                    break;
-                case ETCATDistanceBias::SlowDecay: DistanceScore = 1.0f - (x * x);
-                    break;
-                case ETCATDistanceBias::FastDecay: DistanceScore = (1.0f - x) * (1.0f - x);
-                    break;
-                default: break;
-                }
-
+                const float NormalizedDist = Dist / Context.SearchRadius;
+                const float DistanceScore = EvaluateCurveValue(Context.DistanceBiasCurve, Context.DistanceCurveID, NormalizedDist);
                 const float Sign = (Context.ContextFlags & ETCATContextFlags::IsLowestQuery) ? -1.0f : 1.0f;
-                BiasVal = (DistanceScore * Context.DistanceBiasWeight * Sign);
+                DistBiasVal = (DistanceScore * Context.DistanceBiasWeight * Sign);
             }
 
-            const float CurrentVal = RawValue - SelfInf + BiasVal;
+            const float CurrentVal = RawValue - SelfInf + DistBiasVal;
             FString DebugText = FString::Printf(TEXT("Raw: %.2f"), RawValue);
 
             if (!FMath::IsNearlyZero(SelfInf))
             {
-                DebugText += FString::Printf(TEXT("-Self: %.2f"), SelfInf);
+                DebugText += FString::Printf(TEXT("\n-Self: %.2f"), SelfInf);
             }
-            if (!FMath::IsNearlyZero(BiasVal))
+            if (!FMath::IsNearlyZero(DistBiasVal))
             {
-                DebugText += FString::Printf(TEXT("+Bias: %.2f"), BiasVal);
+                DebugText += FString::Printf(TEXT("\n+Dist: %.2f"), DistBiasVal);
             }
 
-            DebugText += FString::Printf(TEXT("Final: %.2f"), CurrentVal);
-            DebugText += FString::Printf(TEXT("Pos: %.0f, %.0f"), CellWorldPos.X, CellWorldPos.Y);
+            DebugText += FString::Printf(TEXT("\nFinal: %.2f"), CurrentVal);
             
             FColor LogColor = FColor::White;
             if (CurrentVal <= 0.0f) LogColor = FColor::Red;
             else if (CurrentVal > 0.5f) LogColor = FColor::Green;
-            else LogColor = FColor::Yellow;            
+            else LogColor = FColor::Yellow;
 
-            UE_VLOG_LOCATION(DebugOwner, LogCat, Log, VisualPos+ FVector(0.0f, 0.0f, TextZOffset), 0.0f, LogColor, TEXT("%s"), *DebugText);
-            
+            const FVector TextPos = VisualPos + FVector(0.0f, 0.0f, TextZOffset);
+            DebugFrame.CellPositions.Add(TextPos);
+            DebugFrame.CellColors.Add(LogColor);
+            DebugFrame.CellTexts.Add(DebugText);
+
+            if (bShouldVLog)
+            {
+                UE_VLOG_LOCATION(DebugOwner, LogCat, Log, TextPos, 0.0f, LogColor, TEXT("%s"), *DebugText);
+            }
+
             return false;
         });
 
     for (const FTCATSingleResult& Result : Query.OutResults)
     {
         const FVector ResultPos = Result.WorldPos + FVector(0.0f, 0.0f, DebugInfo.HeightOffset);
-        UE_VLOG_LOCATION(DebugOwner, LogCat, Warning, ResultPos, 25.0f, FColor::Cyan,
-            TEXT("Result %.2f"), Result.Value);
+        const FVector ResultTextPos = ResultPos + FVector(0.0f, 0.0f, TextZOffset);
+        const FString ResultText = FString::Printf(TEXT("Result %.2f"), Result.Value);
+
+        DebugFrame.ResultPositions.Add(ResultTextPos);
+        DebugFrame.ResultTexts.Add(ResultText);
+
+        if (bShouldVLog)
+        {
+            UE_VLOG_LOCATION(DebugOwner, LogCat, Warning, ResultPos, 25.0f, FColor::Cyan,
+                TEXT("Result %.2f"), Result.Value);
+        }
     }
+
+    const_cast<FTCATQueryProcessor*>(this)->DrawPersistentDebug();
 }
 
-bool FTCATQueryProcessor::ShouldDrawQueryDebug(const FTCATBatchQuery& Query, int32 DebugMode, const FString& DebugFilter) const
+void FTCATQueryProcessor::DrawPersistentDebug()
 {
-    if (!Query.DebugInfo.bEnabled)
+    if (!CachedWorld)
     {
-        return false;
+        return;
     }
 
-    if (!FVisualLogger::IsRecording())
+    const double Now = CachedWorld->GetTimeSeconds();
+    if (LastDebugFrame.ExpireTime <= Now)
     {
-        return false;
+        return;
     }
-    
-    if (DebugMode == 2)
-    {
-        return true;
-    }
-    
-    if (DebugMode == 1)
-    {
-        const AActor* DebugActor = Query.DebugInfo.DebugOwner.Get();
-        if (!DebugActor) return false;
-        
-        if (!DebugFilter.IsEmpty())
-        {
-            return DebugActor->GetName().Contains(DebugFilter);
-        }
 
-#if WITH_EDITOR
-        if (DebugActor->IsSelected())
-        {
-            return true;
-        }
-#endif
+    const float Duration = FMath::Max(0.0f, CVarTCATQueryTextDuration.GetValueOnGameThread());
+
+    const int32 CellCount = LastDebugFrame.CellTexts.Num();
+    for (int32 Index = 0; Index < CellCount; ++Index)
+    {
+        const FVector& Pos = LastDebugFrame.CellPositions[Index];
+        const FString& Text = LastDebugFrame.CellTexts[Index];
+        const FColor& Color = LastDebugFrame.CellColors[Index];
+        DrawDebugString(CachedWorld, Pos, Text, nullptr, Color, Duration, false);
     }
-    return false;
+
+    const int32 ResultCount = LastDebugFrame.ResultTexts.Num();
+    for (int32 Index = 0; Index < ResultCount; ++Index)
+    {
+        DrawDebugString(CachedWorld, LastDebugFrame.ResultPositions[Index], LastDebugFrame.ResultTexts[Index], nullptr, FColor::Cyan, Duration, false);
+    }
 }
 #endif
 
-float FTCATQueryProcessor::CalculateModifiedValue(const FTCATQueryContext& Context, float RawValue, const FVector& CellWorldPos , int32 GridX, int32 GridY)
+float FTCATQueryProcessor::CalculateModifiedValue(const FTCATQueryContext& Context, float RawValue, const FVector& CellWorldPos , int32 GridX, int32 GridY) const
 {
     float FinalValue = RawValue;
     
-    if (Context.bUseRandomizedTiebreaker)
+    const float JitterScale = 0.0001f; 
+    const float Noise = UTCATMathLibrary::GetSpatialHash(GridX, GridY, Context.RandomSeed);
+    const float Sign = (Context.ContextFlags & ETCATContextFlags::IsLowestQuery) ? -1.0f : 1.0f;
+
+    FinalValue += (Noise * JitterScale * Sign);    
+       
+    if (!(Context.ContextFlags & ETCATContextFlags::NeedDistance))
     {
-        const float JitterScale = 0.0001f; 
-        const float Noise = UTCATMathLibrary::GetSpatialHash(GridX, GridY, Context.RandomSeed);
-        const float Sign = (Context.ContextFlags & ETCATContextFlags::IsLowestQuery) ? -1.0f : 1.0f;
-    
-        FinalValue += (Noise * JitterScale * Sign);    
+        return FinalValue;
     }
     
-    if (!(Context.ContextFlags & ETCATContextFlags::NeedDistance)) return FinalValue;
-    
-    const float Dist = FVector::Dist(CellWorldPos, Context.Center);
+    const float DistToCenter = FVector::Dist(CellWorldPos, Context.SearchCenter);
 
-    if (Context.ContextFlags & ETCATContextFlags::HasSelfInfluence)
+    if ((Context.ContextFlags & ETCATContextFlags::HasSelfInfluence) && Context.InfluenceRadius > KINDA_SMALL_NUMBER)
     {
-        float CurveVal = CalculateSelfInfluence(*Context.Curve, Dist, Context.InfluenceRadius);
+        const float SelfDistance = FVector::Dist(CellWorldPos, Context.SelfOrigin);
+        const float NormalizedSelfDistance = SelfDistance / Context.InfluenceRadius;
+        const float CurveVal = EvaluateCurveValue(Context.Curve, Context.SelfCurveID, NormalizedSelfDistance);
         FinalValue -= (CurveVal * Context.SelfRemovalFactor);
     }
 
-    if (Context.ContextFlags & ETCATContextFlags::HasDistanceBias && abs(FinalValue) >= KINDA_SMALL_NUMBER)
+    if ((Context.ContextFlags & ETCATContextFlags::HasDistanceBias) && Context.SearchRadius > KINDA_SMALL_NUMBER)
     {
-        const float x = FMath::Clamp(Dist / Context.SearchRadius, 0.0f, 1.0f);
-        float DistanceScore = 0.0f;
+        const float NormalizedDistance = DistToCenter / Context.SearchRadius;
+        const float DistanceScore = EvaluateCurveValue(Context.DistanceBiasCurve, Context.DistanceCurveID, NormalizedDistance);
         
-        switch (Context.DistanceBiasType)
-        {
-        case ETCATDistanceBias::Linear: DistanceScore = 1.0f - x; break;
-        case ETCATDistanceBias::SlowDecay:  DistanceScore = 1.0f - (x * x); break;
-        case ETCATDistanceBias::FastDecay:  DistanceScore = (1.0f - x) * (1.0f - x); break;
-        }
-
-        const float Sign = (Context.ContextFlags & ETCATContextFlags::IsLowestQuery) ? -1.0f : 1.0f;
         FinalValue += (DistanceScore * Context.DistanceBiasWeight * Sign);
     }
         
     return FinalValue;
 }
 
-float FTCATQueryProcessor::CalculateSelfInfluence(const UCurveFloat& Curve, float Distance, float InfluenceRadius)
+float FTCATQueryProcessor::EvaluateCurveValue(const UCurveFloat* Curve, int32 CurveIndex, float NormalizedDistance) const
 {
-    const float Time = FMath::Clamp(Distance / InfluenceRadius, 0.0f, 1.0f);
-    return Curve.GetFloatValue(Time);
+    const float Time = FMath::Clamp(NormalizedDistance, 0.0f, 1.0f);
+
+    if (CurveIndex != INDEX_NONE && CurveAtlasData && CurveAtlasWidth > 1 && CurveAtlasRowCount > CurveIndex)
+    {
+        return SampleCurveAtlas(CurveIndex, Time);
+    }
+
+    if (Curve)
+    {
+        return Curve->GetFloatValue(Time);
+    }
+
+    return 0.0f;
+}
+
+float FTCATQueryProcessor::SampleCurveAtlas(int32 CurveIndex, float NormalizedDistance) const
+{
+    if (!CurveAtlasData || CurveAtlasWidth <= 1 || CurveAtlasRowCount <= 0)
+    {
+        return 0.0f;
+    }
+
+    if (CurveIndex < 0 || CurveIndex >= CurveAtlasRowCount)
+    {
+        return 0.0f;
+    }
+
+    const float Time = FMath::Clamp(NormalizedDistance, 0.0f, 1.0f);
+    const float VirtualColumn = Time * (CurveAtlasWidth - 1);
+    const int32 IndexLeft = FMath::Clamp(FMath::FloorToInt(VirtualColumn), 0, CurveAtlasWidth - 1);
+    const int32 IndexRight = FMath::Min(IndexLeft + 1, CurveAtlasWidth - 1);
+    const float Alpha = VirtualColumn - IndexLeft;
+
+    const int32 RowOffset = CurveIndex * CurveAtlasWidth;
+    const TArray<float>& Data = *CurveAtlasData;
+    const int32 LeftIndex = RowOffset + IndexLeft;
+    const int32 RightIndex = RowOffset + IndexRight;
+
+    if (!Data.IsValidIndex(LeftIndex) || !Data.IsValidIndex(RightIndex))
+    {
+        return 0.0f;
+    }
+
+    return FMath::Lerp(Data[LeftIndex], Data[RightIndex], Alpha);
 }
 
 void FTCATQueryProcessor::CalculatePotentialDelta(const UCurveFloat& Curve, float Factor, float& OutMaxAdd, float& OutMaxSub)

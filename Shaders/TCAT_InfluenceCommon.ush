@@ -9,7 +9,8 @@ struct FTCAT_InfluenceSource
     float InfluenceRadius;
     float Strength; // Importance of the source (Positive for allies, Negative for enemies)
     int CurveTypeIndex; // ID of curve types in the LUT (Curve Data)
-    float InfluenceHalfHeight;
+    float InfluenceZLimitOffset; // User-configurable offset (not used in shader)
+    float MaxInfluenceZ; // Computed max Z where influence applies (BoundingBoxTop.Z + Offset)
     float EyeHeightOffset;
 };
 
