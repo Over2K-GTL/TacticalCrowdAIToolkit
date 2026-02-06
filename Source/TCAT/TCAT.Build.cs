@@ -35,6 +35,7 @@ public class TCAT : ModuleRules
 				"Renderer",
 				"Slate",
 				"SlateCore",
+				"Navmesh",
 			}
 			);
 

@@ -95,7 +95,10 @@ void FTCATEditorModule::StartupModule()
 
 	// Register global input processor for shortcut handling (works during PIE too)
 	InputProcessor = MakeShareable(new FTCATInputProcessor(this));
-	FSlateApplication::Get().RegisterInputPreProcessor(InputProcessor);
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().RegisterInputPreProcessor(InputProcessor);	
+	}
 }
 
 void FTCATEditorModule::ShutdownModule()
@@ -222,6 +225,8 @@ void FTCATEditorModule::OnToggleDebugDrawMode()
 		{
 			Volume->MarkPackageDirty();
 		}
+
+		
 	}
 
 	// On-screen feedback

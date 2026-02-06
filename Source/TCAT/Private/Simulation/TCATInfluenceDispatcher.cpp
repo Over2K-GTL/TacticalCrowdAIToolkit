@@ -22,7 +22,16 @@ void FTCATInfluenceDispatcher::DispatchGPU_Batched(
 	TArray<FTCATCompositeDispatchParams>&& CompositeBatch)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_Dispatch_Total)
-    FRDGBuilder GraphBuilder(RHICmdList);
+	FRDGBuilder GraphBuilder(RHICmdList);
+	
+	auto AllocName = [&](const FString& InName) -> const TCHAR*
+	{
+		const int32 Len = InName.Len() + 1;
+		TCHAR* Ptr = (TCHAR*)GraphBuilder.Alloc(Len * sizeof(TCHAR), alignof(TCHAR));
+		FMemory::Memcpy(Ptr, *InName, Len * sizeof(TCHAR));
+		return Ptr;
+	};
+	
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_BuildRDG);
 		RDG_EVENT_SCOPE(GraphBuilder, "TCAT_Influence_Update_Group");
@@ -41,8 +50,8 @@ void FTCATInfluenceDispatcher::DispatchGPU_Batched(
 
     		FString DebugName = FString::Printf(TEXT("TCAT_Out_%s"), *Params.VolumeName);
     		FRDGTextureRef OutputTexture = GraphBuilder.RegisterExternalTexture(
-			  CreateRenderTarget(Params.OutInfluenceMapRHI, *DebugName)
-			  );
+				CreateRenderTarget(Params.OutInfluenceMapRHI, AllocName(DebugName))
+			);
     		FRDGTextureUAVRef OutputUAV = GraphBuilder.CreateUAV(OutputTexture);
 
     		FString LayerTagName;
@@ -179,8 +188,10 @@ void FTCATInfluenceDispatcher::DispatchGPU_Batched(
 			TMap<FName, FRDGTextureRef> RDGInputTextures;
 			for (auto& Pair : Params.InputTextureMap)
 			{
+				const FString InputName = FString::Printf(TEXT("TCAT_Input_%s"), *Pair.Key.ToString());
+
 				RDGInputTextures.Add(Pair.Key, GraphBuilder.RegisterExternalTexture(
-					CreateRenderTarget(Pair.Value, *FString::Printf(TEXT("TCAT_Input_%s"), *Pair.Key.ToString()))
+				   CreateRenderTarget(Pair.Value, AllocName(InputName))
 				));
 			}
 			
@@ -634,6 +645,11 @@ float FTCATInfluenceDispatcher::CheckVisibilityCPU(
 FRDGTextureSRVRef FTCATInfluenceDispatcher::DispatchMinMaxReduction(
 	FRDGBuilder& GraphBuilder, FRDGTextureRef InputTexture, FUintVector2 MapSize, const FString& DebugName)
 {
+	const FString NameStr = FString::Printf(TEXT("TCAT_MinMax_%s"), *DebugName);
+	const int32 Len = NameStr.Len() + 1;
+	TCHAR* NamePtr = (TCHAR*)GraphBuilder.Alloc(Len * sizeof(TCHAR), alignof(TCHAR));
+	FMemory::Memcpy(NamePtr, *NameStr, Len * sizeof(TCHAR));
+	
 	// Create 1x1 RG32F texture to store (Min, Max)
 	const FRDGTextureDesc MinMaxTextureDesc = FRDGTextureDesc::Create2D(
 		FIntPoint(1, 1),
@@ -643,8 +659,8 @@ FRDGTextureSRVRef FTCATInfluenceDispatcher::DispatchMinMaxReduction(
 	);
 
 	FRDGTextureRef MinMaxTexture = GraphBuilder.CreateTexture(
-		MinMaxTextureDesc,
-		*FString::Printf(TEXT("TCAT_MinMax_%s"), *DebugName)
+	   MinMaxTextureDesc,
+	   NamePtr
 	);
 
 	AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(MinMaxTexture), FVector4f(0, 0, 0, 0));

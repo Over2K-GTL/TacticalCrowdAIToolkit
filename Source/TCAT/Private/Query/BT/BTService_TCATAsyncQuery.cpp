@@ -180,6 +180,7 @@ void UBTService_TCATAsyncQuery::TickNode(UBehaviorTreeComponent& OwnerComp, uint
     NewQuery.MaxResults = 1;
     NewQuery.RandomSeed = HashCombineFast(GetTypeHash(NewQuery.MapTag), GetTypeHash(NewQuery.SearchCenter));
     NewQuery.RandomSeed = HashCombineFast(NewQuery.RandomSeed, (uint32)GFrameCounter);
+    NewQuery.SampleStride = FMath::Max(1, QuerySampleStride);
 
     NewQuery.bExcludeUnreachableLocation = bExcludeUnreachableLocation;
     NewQuery.bTraceVisibility = bTraceVisibility;
@@ -189,6 +190,7 @@ void UBTService_TCATAsyncQuery::TickNode(UBehaviorTreeComponent& OwnerComp, uint
     AActor* DebugActor = AIOwner ? AIOwner->GetPawn() : OwnerComp.GetOwner();
 #if ENABLE_VISUAL_LOG
     NewQuery.DebugInfo.DebugOwner = DebugActor;
+    NewQuery.DebugInfo.SampleStride = QuerySampleStride;
 #endif
     NewQuery.DistanceBiasCurve = DistanceBiasCurve;
     NewQuery.DistanceBiasCurveID = DistanceBiasCurve ? TCAT->GetCurveID(DistanceBiasCurve.Get()) : INDEX_NONE;

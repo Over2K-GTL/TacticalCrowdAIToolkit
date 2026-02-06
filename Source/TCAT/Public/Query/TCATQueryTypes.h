@@ -106,7 +106,8 @@ struct FTCATQueryDebugInfo
 		const AActor* Owner = DebugOwner.Get();
 		return Owner && Owner->IsSelected();
 #else
-		return DebugOwner.IsValid();
+		// return DebugOwner.IsValid();
+		return false;
 #endif
 	}
 };
@@ -134,6 +135,11 @@ FTCATBatchQuery
 	// Where to query
 	FVector SearchCenter;
 	float SearchRadius;
+
+	/** Number of grid cells to skip horizontally/vertically while sampling.
+	 * 1 = evaluate every cell. Higher values reduce cost at the expense of accuracy.
+	 */
+	int32 SampleStride = 1;
 
 	// Condition (Optional)
 	float CompareValue;

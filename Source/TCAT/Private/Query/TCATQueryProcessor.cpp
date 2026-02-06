@@ -79,6 +79,7 @@ struct FTCATQueryContext
     int32 SelfCurveID = INDEX_NONE;
     int32 DistanceCurveID = INDEX_NONE;
     float DistanceBiasWeight = 0.0f;
+    int32 SampleStride = 1;
     
     FTCATQueryContext(const struct FTCATBatchQuery& InQuery)
         : Curve(InQuery.Curve.Get())
@@ -99,7 +100,9 @@ struct FTCATQueryContext
         , SelfCurveID(InQuery.SelfCurveID)
         , DistanceCurveID(InQuery.DistanceBiasCurveID)
         , DistanceBiasWeight(InQuery.DistanceBiasWeight)
+		, SampleStride(FMath::Max(1, InQuery.SampleStride))
     {
+        SampleStride = 2;
         if ((InfluenceRadius > KINDA_SMALL_NUMBER) && (FMath::Abs(SelfRemovalFactor)>KINDA_SMALL_NUMBER) && (SelfCurveID != INDEX_NONE || Curve))
         {
             ContextFlags |= ETCATContextFlags::HasSelfInfluence;
@@ -1015,13 +1018,14 @@ void FTCATQueryProcessor::ForEachCellInCircle(const FTCATQueryContext& Context,
         const float GridCenterY = (Context.SearchCenter.Y - GridOrigin.Y) * InvCellSize;
         const float GridRadius = Context.SearchRadius * InvCellSize;
         const float GridRadiusSq = GridRadius * GridRadius;
+        const int32 SampleStride = FMath::Max(1, Context.SampleStride);
 
         // Clamped Search Bounds
         const int32 MinY = FMath::Clamp(FMath::FloorToInt(GridCenterY - GridRadius), 0, GridHeight - 1);
         const int32 MaxY = FMath::Clamp(FMath::CeilToInt(GridCenterY + GridRadius), 0, GridHeight - 1);
         const int32 MaxXLimit = GridWidth - 1;
 
-        for (int32 Y = MinY; Y <= MaxY; ++Y)
+        for (int32 Y = MinY; Y <= MaxY; Y += SampleStride)
         {
             const float DistY = (float)Y - GridCenterY;
             const float DistYSq = DistY * DistY;
@@ -1034,7 +1038,7 @@ void FTCATQueryProcessor::ForEachCellInCircle(const FTCATQueryContext& Context,
 
             const float* RowPtr = GridDataPtr + (Y * GridWidth);
             
-            for (int32 X = MinX; X <= MaxX; ++X)
+            for (int32 X = MinX; X <= MaxX; X += SampleStride)
             {
                 ProcessedCellCount++; // Stat
                 
@@ -1229,7 +1233,7 @@ float FTCATQueryProcessor::CalculateModifiedValue(const FTCATQueryContext& Conte
     const float Noise = UTCATMathLibrary::GetSpatialHash(GridX, GridY, Context.RandomSeed);
     const float Sign = (Context.ContextFlags & ETCATContextFlags::IsLowestQuery) ? -1.0f : 1.0f;
 
-    FinalValue += (Noise * JitterScale * Sign);    
+    //FinalValue += (Noise * JitterScale * Sign);    
        
     if (!(Context.ContextFlags & ETCATContextFlags::NeedDistance))
     {

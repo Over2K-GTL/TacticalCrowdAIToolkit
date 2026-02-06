@@ -160,6 +160,10 @@ protected:
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay, meta=(EditCondition="DistanceBiasCurve != nullptr"))
     float DistanceBiasWeight = 0.5f;
 
+    /** Sample every Nth cell inside the search radius (1 = examine every cell). */
+    UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay, meta=(ClampMin="1", UIMin="1"))
+    int32 QuerySampleStride = 1;
+
     /** Optional explicit influence component. If unset, the service auto-detects on the AI pawn. */
     UPROPERTY(EditAnywhere, Category = "TCAT Advanced", AdvancedDisplay)
     TObjectPtr<UTCATInfluenceComponent> ExplicitInfluenceComponent = nullptr;
@@ -177,5 +181,3 @@ private:
     /** Flag to prevent multiple queries from stacking if Tick is faster than Query. */
     bool bIsQuerying = false;
 };
-
-

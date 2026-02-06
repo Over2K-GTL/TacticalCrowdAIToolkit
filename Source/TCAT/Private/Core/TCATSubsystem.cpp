@@ -24,6 +24,7 @@
 
 DECLARE_CYCLE_STAT(TEXT("GPU_Readback_Retrieve"), STAT_TCAT_Readback_Retrieve, STATGROUP_TCAT);
 DECLARE_CYCLE_STAT(TEXT("GPU_Readback_LockCopy"), STAT_TCAT_Readback_LockCopy, STATGROUP_TCAT);
+DECLARE_CYCLE_STAT(TEXT("GPU_Sync_Wait"), STAT_TCAT_GPU_Sync_Wait, STATGROUP_TCAT);
 
 DECLARE_DWORD_COUNTER_STAT(TEXT("Is_GPU_Update_Mode(1: GPU, 0: CPU)"), STAT_TCAT_Is_GPU_Update_Mode, STATGROUP_TCAT);
 
@@ -79,6 +80,17 @@ void UTCATSubsystem::Tick(float DeltaTime)
 	SET_DWORD_STAT(STAT_TCAT_Is_GPU_Update_Mode, bRefreshWithGPUForAdaptiveVolumes ? 1 : 0);
 
 	if (!GlobalCurveAtlasRHI.IsValid()) { return; }
+
+	// Frame Synchronization (Max Latency: 3 Frames)
+	// Force the CPU to wait if the GPU hasn't finished the frame from 3 ticks ago
+	static FRenderCommandFence TCATFrameFences[3];
+	static uint32 FenceIndex = 0;
+	
+	{
+		SCOPE_CYCLE_COUNTER(STAT_TCAT_GPU_Sync_Wait);
+		TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_GPU_Sync_Wait);
+		TCATFrameFences[FenceIndex].Wait();
+	}
 
 	// Check if CPU measurement task has completed
 	if (bIsMeasuringCPU && CPUMeasurementTask.IsReady())
@@ -346,6 +358,10 @@ void UTCATSubsystem::Tick(float DeltaTime)
 	// Phase 7: Visual Logger
 	// =========================================================================
 	VLogInfluence();
+
+	// Mark the end of this frame's render commands.
+	TCATFrameFences[FenceIndex].BeginFence();
+	FenceIndex = (FenceIndex + 1) % 3;
 }
 void UTCATSubsystem::RegisterVolume(ATCATInfluenceVolume* InVolume)
 {
