@@ -30,6 +30,9 @@ struct FTCATCompositeDispatchParams;
  */
 struct FTransientSourceWrapper
 {
+	/** TransientSource Indentifier. */
+	int32 Handle;
+
 	/** Target influence map to which this transient source contributes. */
 	FName MapTag;
 	
@@ -163,9 +166,18 @@ public:
 	 * @param InStrengthCurveOverTime Curve asset defining the influence strength over time.
 	 * @param bDestroyIfZeroStrength If true, the source will be removed once its strength curve reaches zero.
 	 * @param InCurve   Curve asset defining the influence falloff over distance.
+	 * @return A unique handle (ID) for the transient source, which can be used for removal.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "TCAT")
-	void AddTransientInfluence(UPARAM(meta = (GetOptions = "TCAT.TCATSettings.GetAllTagOptions")) FName MapTag, const FTCATInfluenceSource& InSource, UCurveFloat* InStrengthCurveOverTime, bool bDestroyIfZeroStrength = true, UCurveFloat* InCurve = nullptr);
+	int32 AddTransientInfluence(UPARAM(meta = (GetOptions = "TCAT.TCATSettings.GetAllTagOptions")) FName MapTag, const FTCATInfluenceSource& InSource, UCurveFloat* InStrengthCurveOverTime, bool bDestroyIfZeroStrength = true, UCurveFloat* InCurve = nullptr);
+
+	/**
+	 * Removes a transient influence source using its unique handle.
+	 * @param Handle The unique identifier for the transient source to be removed.
+	 * @return True if the source was found and removed; false if no matching source was found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "TCAT")
+	bool RemoveTransientInfluence(int32 Handle);
 	
 	/**
 	 * Retrieves all active transient sources within bounds.
@@ -304,6 +316,9 @@ private:
 
 	/** Stores one-frame transient influence data. */
 	TArray<FTransientSourceWrapper> AllTransientSources;
+
+	/** Start from 1 to avoid using 0 as a valid handle. */
+	int32 NextTransientSourceHandle = 1;
 #pragma endregion
 
 // =======================================================================	

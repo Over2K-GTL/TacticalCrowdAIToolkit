@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.0",
+	"VersionName": "1.0.1",
 	"FriendlyName": "TCAT",
 	"Description": "Tactical Crowd AI Toolkit: GPU-based Influence Map system for large-scale AI simulation.",
 	"Category": "AI",

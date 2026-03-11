@@ -219,12 +219,15 @@ void UTCATSubsystem::Tick(float DeltaTime)
 	for (int32 i = AllTransientSources.Num() - 1; i >= 0; --i)
 	{
 		FTransientSourceWrapper& SourceWrapper = AllTransientSources[i];
-		SourceWrapper.ElapsedTime += DeltaTime;
-		SourceWrapper.Data.Strength = SourceWrapper.StrengthCurveOverTime->GetFloatValue(SourceWrapper.ElapsedTime);
-
-		if (SourceWrapper.Data.Strength <= UE_KINDA_SMALL_NUMBER && SourceWrapper.bDestroyIfZeroStrength)
+		if (SourceWrapper.StrengthCurveOverTime)
 		{
-			AllTransientSources.RemoveAtSwap(i);
+			SourceWrapper.ElapsedTime += DeltaTime;
+			SourceWrapper.Data.Strength = SourceWrapper.StrengthCurveOverTime->GetFloatValue(SourceWrapper.ElapsedTime);
+
+			if (SourceWrapper.Data.Strength <= UE_KINDA_SMALL_NUMBER && SourceWrapper.bDestroyIfZeroStrength)
+			{
+				AllTransientSources.RemoveAtSwap(i);
+			}
 		}
 	}
 
@@ -578,21 +581,16 @@ void UTCATSubsystem::GetAllComponentsInBounds(const FBox& InVolumeBounds, TArray
 	}
 }
 
-void UTCATSubsystem::AddTransientInfluence(FName MapTag, const FTCATInfluenceSource& InSource, UCurveFloat* InStrengthCurveOverTime, bool bDestroyIfZeroStrength, UCurveFloat* InCurve)
+int32 UTCATSubsystem::AddTransientInfluence(FName MapTag, const FTCATInfluenceSource& InSource, UCurveFloat* InStrengthCurveOverTime, bool bDestroyIfZeroStrength, UCurveFloat* InCurve)
 {
 	if (MapTag.IsNone())
 	{
 		UE_LOG(LogTCAT, Error, TEXT("TCATSubsystem: MapTag is None!"));
-		return;
-	}
-
-	if (!InStrengthCurveOverTime)
-	{
-		UE_LOG(LogTCAT, Error, TEXT("TCATSubsystem: InStrengthCurveOverTime is null!"));
-		return;
+		return 0;
 	}
 
 	FTransientSourceWrapper Wrapper;
+	Wrapper.Handle = NextTransientSourceHandle++;
 	Wrapper.MapTag = MapTag;
 	Wrapper.Data = InSource;
 	Wrapper.CurveAsset = InCurve;
@@ -600,9 +598,28 @@ void UTCATSubsystem::AddTransientInfluence(FName MapTag, const FTCATInfluenceSou
 	Wrapper.ElapsedTime = 0.0f;
 	Wrapper.bDestroyIfZeroStrength = bDestroyIfZeroStrength;
 
-	Wrapper.Data.Strength = Wrapper.StrengthCurveOverTime->GetFloatValue(Wrapper.ElapsedTime);
+	if (Wrapper.StrengthCurveOverTime)
+	{
+		Wrapper.Data.Strength = Wrapper.StrengthCurveOverTime->GetFloatValue(Wrapper.ElapsedTime);
+	}
 
 	AllTransientSources.Add(Wrapper);
+	return Wrapper.Handle;
+}
+
+bool UTCATSubsystem::RemoveTransientInfluence(int32 Handle)
+{
+	for (int32 i = 0; i < AllTransientSources.Num(); ++i)
+	{
+		if (AllTransientSources[i].Handle == Handle)
+		{
+			AllTransientSources.RemoveAtSwap(i);
+			return true;
+		}
+	}
+
+	UE_LOG(LogTCAT, Error, TEXT("TCATSubsystem: Handle (%d) is invalid."), Handle);
+	return false;
 }
 
 void UTCATSubsystem::GetAllTransientSourcesInBounds(const FBox& InVolumeBounds, TArray<FTransientSourceWrapper>& OutWrapperSources)
