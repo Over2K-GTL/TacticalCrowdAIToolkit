@@ -200,6 +200,7 @@ public:
      */
     FORCEINLINE bool IsPossiblePrediction() const { return bRefreshWithGPU && bEnablePositionPrediction; }
 
+#if WITH_EDITOR
     /**
      * Scans overlapping Influence Components within this volume bounds and adds any missing
      * Base Map Config entries for newly discovered tags.
@@ -207,7 +208,6 @@ public:
     UFUNCTION(CallInEditor, Category = "TCAT", meta=(DisplayName="Add Missing Maps"))
     void AddMissingLayers();
     
-#if WITH_EDITOR
     virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 

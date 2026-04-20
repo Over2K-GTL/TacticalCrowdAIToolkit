@@ -129,9 +129,9 @@ void ATCATInfluenceVolume::BakeHeightMap()
 #endif
 }
 
+#if WITH_EDITOR
 void ATCATInfluenceVolume::AddMissingLayers()
 {
-#if WITH_EDITOR
 	UTCATSubsystem* Subsystem = GetTCATSubsystem();
 	if (!Subsystem)
 	{
@@ -170,8 +170,8 @@ void ATCATInfluenceVolume::AddMissingLayers()
 		RebuildRuntimeMaps();
 		UE_LOG(LogTCAT, Log, TEXT("[%s] All layers are already synced."), *GetName());
 	}
-#endif
 }
+#endif
 
 #if WITH_EDITOR
 void ATCATInfluenceVolume::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
