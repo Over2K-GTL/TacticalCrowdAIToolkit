@@ -16,6 +16,8 @@ DECLARE_CYCLE_STAT(TEXT("Influence_GPU_Dispatch"), STAT_TCAT_GPU_Dispatch, STATG
 DECLARE_CYCLE_STAT(TEXT("Influence_CPU_Total"), STAT_TCAT_CPU_Total, STATGROUP_TCAT);
 DECLARE_CYCLE_STAT(TEXT("Influence_Readback_Wait"), STAT_TCAT_Readback_Wait, STATGROUP_TCAT);
 
+DECLARE_GPU_STAT_NAMED(TCAT_Influence_Update_Stats, TEXT("TCAT_Influence_Update"));
+
 void FTCATInfluenceDispatcher::DispatchGPU_Batched(
 	FRHICommandListImmediate& RHICmdList,
 	TArray<FTCATInfluenceDispatchParams>&& InfluenceBatch,
@@ -34,8 +36,7 @@ void FTCATInfluenceDispatcher::DispatchGPU_Batched(
 	
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_BuildRDG);
-		RDG_EVENT_SCOPE(GraphBuilder, "TCAT_Influence_Update_Group");
-		RDG_GPU_STAT_SCOPE(GraphBuilder, TCAT_Influence_Update_Stats);
+		RDG_EVENT_SCOPE_STAT(GraphBuilder, TCAT_Influence_Update_Stats, "TCAT_Influence_Update_Group");
 
 		TMap<FName, FRDGTextureRef> GlobalRDGTextureMap;
 		

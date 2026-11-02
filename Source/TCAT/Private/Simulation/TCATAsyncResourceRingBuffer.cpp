@@ -3,11 +3,67 @@
 
 #include "Simulation/TCATAsyncResourceRingBuffer.h"
 #include "RHIGPUReadback.h"
+#include "RenderingThread.h"
 #include "TCAT.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "UObject/Package.h"
 #include "Engine/World.h"
 #include "VisualLogger/VisualLogger.h"
+
+void FTCATReadbackCPUData::CopyFromReadback_RenderThread(FRHIGPUTextureReadback& Readback, uint32 Generation, int32 InWidth, int32 InHeight)
+{
+	check(IsInRenderingThread());
+
+	// GPU not finished yet. Leave CopiedGeneration untouched so the game thread requests again next frame.
+	if (!Readback.IsReady())
+	{
+		return;
+	}
+
+	Width = InWidth;
+	Height = InHeight;
+	bHasData = false;
+
+	int32 RowPitchInPixels = 0;
+	if (const uint8* MappedData = static_cast<const uint8*>(Readback.Lock(RowPitchInPixels)))
+	{
+		if (InWidth > 0 && InHeight > 0 && RowPitchInPixels >= InWidth)
+		{
+			Data.SetNumUninitialized(InWidth * InHeight, EAllowShrinking::No);
+
+			const int32 StrideInBytes = RowPitchInPixels * sizeof(float);
+			const int32 RowBytes = InWidth * sizeof(float);
+
+			float CurrentMin = FLT_MAX;
+			float CurrentMax = -FLT_MAX;
+
+			float* DestBase = Data.GetData();
+
+			// Copy row by row to handle potential padding (Stride) from GPU memory
+			for (int32 Y = 0; Y < InHeight; ++Y)
+			{
+				float* DestRow = DestBase + (Y * InWidth);
+				FMemory::Memcpy(DestRow, MappedData + (Y * StrideInBytes), RowBytes);
+
+				for (int32 X = 0; X < InWidth; ++X)
+				{
+					const float Val = DestRow[X];
+					if (Val < CurrentMin) CurrentMin = Val;
+					if (Val > CurrentMax) CurrentMax = Val;
+				}
+			}
+
+			MinValue = CurrentMin;
+			MaxValue = CurrentMax;
+			bHasData = true;
+		}
+
+		Readback.Unlock();
+	}
+
+	// Publish: everything written above becomes visible to the game thread once it observes this generation.
+	CopiedGeneration.store(Generation, std::memory_order_release);
+}
 
 FTCATAsyncResourceRingBuffer::FTCATAsyncResourceRingBuffer()
     : ReadIndex(0)
@@ -38,10 +94,11 @@ uint32 FTCATAsyncResourceRingBuffer::GetLatestWriteReadLatencyFrames() const
     return LatestWriteReadLatencyFrames;
 }
 
-bool FTCATAsyncResourceRingBuffer::IsReadbackReady(const int32 Index) const
+bool FTCATAsyncResourceRingBuffer::IsCopyComplete(const int32 Index) const
 {
     const FTCATAsyncResource& AsyncResource = AsyncResources[Index];
-    return AsyncResource.Readback && AsyncResource.Readback->IsReady();
+    return AsyncResource.CPUData.IsValid()
+        && AsyncResource.CPUData->CopiedGeneration.load(std::memory_order_acquire) == AsyncResource.WriteGeneration;
 }
 
 bool FTCATAsyncResourceRingBuffer::IsCurrentReadBackReady() const
@@ -51,7 +108,7 @@ bool FTCATAsyncResourceRingBuffer::IsCurrentReadBackReady() const
         return false;
     }
 
-	return IsReadbackReady(ReadIndex);
+	return AsyncResources[ReadIndex].WasMostRecentActionWrite() && IsCopyComplete(ReadIndex);
 }
 
 bool FTCATAsyncResourceRingBuffer::IsReadable(const int32 Index) const
@@ -85,9 +142,9 @@ bool FTCATAsyncResourceRingBuffer::IsReadable(const int32 Index) const
         return false;
     }
 
-    if (!IsReadbackReady(Index))
+    if (!IsCopyComplete(Index))
     {
-        UE_LOG(LogTCAT, VeryVerbose, TEXT("[%s] Read Resource(index: %d)'s Readback not ready yet."), *DebugName.ToString(), Index);
+        UE_LOG(LogTCAT, VeryVerbose, TEXT("[%s] Read Resource(index: %d)'s Readback not copied to CPU yet."), *DebugName.ToString(), Index);
         return false;
     }
 
@@ -143,6 +200,11 @@ bool FTCATAsyncResourceRingBuffer::AdvanceWriteResource(
     FTCATAsyncResource& WriteResource = AsyncResources[WriteIndex];
     WriteResource.WriteTime = OwnerObject->GetWorld()->GetTimeSeconds();
     WriteResource.ReadTime = MAX_dbl; // Not read yet
+	// New generation: copies of the slot's previous contents can no longer satisfy IsCopyComplete()
+	if (++WriteResource.WriteGeneration == 0)
+	{
+		WriteResource.WriteGeneration = 1;
+	}
 	if (DispatchedSourcesWithOwners)
 	{
 		WriteResource.DispatchedSourcesWithOwners = *DispatchedSourcesWithOwners;
@@ -165,6 +227,53 @@ bool FTCATAsyncResourceRingBuffer::AdvanceWriteResource(
         *DebugName.ToString(), WriteResource.WriteTime, ValidCount, BufferSize, WriteIndex, DebugResource.PredictionTimeForDebug);
 
     return true;
+}
+
+void FTCATAsyncResourceRingBuffer::RequestReadbackCopies()
+{
+    struct FCopyRequest
+    {
+        TSharedRef<FTCATReadbackCPUData, ESPMode::ThreadSafe> CPUData;
+        FRHIGPUTextureReadback* Readback;
+        uint32 Generation;
+    };
+
+    TArray<FCopyRequest, TInlineAllocator<BufferSize>> Requests;
+    for (int32 i = 0; i < BufferSize; ++i)
+    {
+        FTCATAsyncResource& Resource = AsyncResources[i];
+        if (!Resource.WasMostRecentActionWrite() || !Resource.Readback || !Resource.CPUData.IsValid() || IsCopyComplete(i))
+        {
+            continue;
+        }
+
+        // Keep at most one request per slot in the render command queue
+        if (Resource.CPUData->bCopyQueued.exchange(true, std::memory_order_acq_rel))
+        {
+            continue;
+        }
+
+        // Slots written this frame are not requested until the next call, so the dispatch that
+        // enqueues their GPU copy is always ahead of this command in the render command queue.
+        Requests.Add({ Resource.CPUData.ToSharedRef(), Resource.Readback, Resource.WriteGeneration });
+    }
+
+    if (Requests.Num() == 0)
+    {
+        return;
+    }
+
+    // Readback::Lock/Unlock use the immediate command list, which is only legal on the render thread.
+    ENQUEUE_RENDER_COMMAND(TCAT_ReadbackCopy)(
+        [Requests = MoveTemp(Requests), CopyWidth = TextureWidth, CopyHeight = TextureHeight](FRHICommandListImmediate& RHICmdList)
+        {
+            TRACE_CPUPROFILER_EVENT_SCOPE(TCAT_RT_ReadbackCopy);
+            for (const FCopyRequest& Request : Requests)
+            {
+                Request.CPUData->CopyFromReadback_RenderThread(*Request.Readback, Request.Generation, CopyWidth, CopyHeight);
+                Request.CPUData->bCopyQueued.store(false, std::memory_order_release);
+            }
+        });
 }
 
 bool FTCATAsyncResourceRingBuffer::AdvanceReadResource(FTCATAsyncResource& OutCurrentReadResource, bool bLogWriteReadLatency)
@@ -328,6 +437,11 @@ void FTCATAsyncResourceRingBuffer::Initialize(UObject* Outer, int32 Width, int32
             Resource.Readback = new FRHIGPUTextureReadback(*ReadbackName);
         }
 
+        if (!Resource.CPUData.IsValid())
+        {
+            Resource.CPUData = MakeShared<FTCATReadbackCPUData, ESPMode::ThreadSafe>();
+        }
+
         Resource.Reset();
 
         // Initialize debug resource
@@ -340,6 +454,8 @@ void FTCATAsyncResourceRingBuffer::Initialize(UObject* Outer, int32 Width, int32
     ValidCount = 0;
 
     OwnerObject = Outer;
+    TextureWidth = Width;
+    TextureHeight = Height;
 
 	DebugName = FName(*FString::Printf(TEXT("TCAT.%s_RingBuffer"), *DebugPrefix));
 
@@ -360,10 +476,24 @@ void FTCATAsyncResourceRingBuffer::Release()
         
         if (Resource.Readback)
         {
-            delete Resource.Readback;
+            // Delete on the render thread: render commands run in order, so any dispatch or copy request
+            // that still references this readback finishes before it is freed.
+            ENQUEUE_RENDER_COMMAND(TCAT_ReleaseReadback)(
+                [Readback = Resource.Readback](FRHICommandListImmediate& RHICmdList)
+                {
+                    delete Readback;
+                });
             Resource.Readback = nullptr;
         }
+
+        // In-flight copy requests hold their own reference to CPUData.
+        Resource.CPUData.Reset();
+        Resource.Reset();
     }
+
+    ReadIndex = 0;
+    WriteIndex = 0;
+    ValidCount = 0;
 
     UE_LOG(LogTCAT, Verbose, TEXT("[RingBuffer] Released all resources"));
 }

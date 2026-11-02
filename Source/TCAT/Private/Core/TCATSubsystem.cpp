@@ -889,64 +889,42 @@ void UTCATSubsystem::RetrieveGPUResults(ATCATInfluenceVolume* Volume)
 		const FName& LayerTag = LayerPair.Key;
         FTCATGridResource& LayerRes = LayerPair.Value;
 
-        // Try to advance the read resource for this specific layer's ring buffer
+        // Ask the render thread to Lock/copy readbacks the GPU has finished. Results are consumed on a later frame.
+        LayerRes.AsyncRingBuffer.RequestReadbackCopies();
+
+        // Try to advance the read resource for this specific layer's ring buffer (only slots already copied to CPU)
         FTCATAsyncResource ReadResource;
         if (LayerRes.AsyncRingBuffer.AdvanceReadResource(ReadResource, Volume->bLogAsyncFrame))
         {
 			SCOPE_CYCLE_COUNTER(STAT_TCAT_Readback_LockCopy);
 
-			FRHIGPUTextureReadback* Readback = ReadResource.Readback;
-			// Latency logging (Uses volume-level LastRequestFrame or could be per-layer)
-			uint64 CurrentFrame = GFrameCounter;
-			uint64 Latency = CurrentFrame - LayerRes.LastRequestFrame;
-           
 			if (Volume->bLogAsyncFrame)
 			{
 				UE_LOG(LogTCAT, Log, TEXT("Layer[%s] in Volume[%s] Readback Success"),
 					*LayerTag.ToString(), *Volume->GetActorNameOrLabel());
 			}
-           
-			// 1. Lock and Copy the GPU memory to the CPU grid
-			int32 StrideInElements = 0;
-			if (float* MappedData = static_cast<float*>(Readback->Lock(StrideInElements)))
+
+			// 1. Copy the render-thread copy of the GPU memory to the CPU grid
+			const FTCATReadbackCPUData* CPUData = ReadResource.CPUData.Get();
+			if (CPUData && CPUData->bHasData)
 			{
 				const int32 Cols = Volume->GetColumns();
 				const int32 Rows = Volume->GetRows();
 
-				// Ensure the CPU grid buffer is correctly sized
-				if (LayerRes.Grid.Num() != Cols * Rows)
+				// Skip results written before a resolution change
+				if (CPUData->Width == Cols && CPUData->Height == Rows)
 				{
-					LayerRes.Grid.SetNumUninitialized(Cols * Rows);
-				}
-
-				const int32 StrideInBytes = StrideInElements * sizeof(float);
-				const uint32 RowPitch = Cols * sizeof(float);
-
-				float CurrentMin = FLT_MAX;
-				float CurrentMax = -FLT_MAX;
-
-				float* DestBase = LayerRes.Grid.GetData();
-           	
-				// Copy row by row to handle potential padding (Stride) from GPU memory
-				for (int32 Y = 0; Y < Rows; ++Y)
-				{
-					float* DestRow = DestBase + (Y * Cols);
-					const uint8* SrcRow = reinterpret_cast<uint8*>(MappedData) + (Y * StrideInBytes);
-
-					FMemory::Memcpy(DestRow, SrcRow, RowPitch);
-              	
-					for (int32 X = 0; X < Cols; ++X)
+					// Ensure the CPU grid buffer is correctly sized
+					if (LayerRes.Grid.Num() != Cols * Rows)
 					{
-              			const float Val = DestRow[X];
-              			if (Val < CurrentMin) CurrentMin = Val;
-              			if (Val > CurrentMax) CurrentMax = Val;
+						LayerRes.Grid.SetNumUninitialized(Cols * Rows);
 					}
+
+					FMemory::Memcpy(LayerRes.Grid.GetData(), CPUData->Data.GetData(), Cols * Rows * sizeof(float));
+
+					LayerRes.MinMapValue = CPUData->MinValue;
+					LayerRes.MaxMapValue = CPUData->MaxValue;
 				}
-
-				LayerRes.MinMapValue = CurrentMin;
-				LayerRes.MaxMapValue = CurrentMax;
-
-				Readback->Unlock();
 			}
 
 			// 2. For components that failed prediction, update the MAP again using the CPU.
@@ -1266,7 +1244,7 @@ void UTCATSubsystem::InitializeStaticGlobalCurveAtlas()
                 FRHITextureCreateDesc::Create2D(TEXT("TCAT_StaticGlobalAtlas"), AtlasWidth, AtlasHeight, PF_R32_FLOAT)
                 .SetFlags(ETextureCreateFlags::ShaderResource);
             
-            GlobalCurveAtlasRHI = RHICreateTexture(Desc);
+            GlobalCurveAtlasRHI = RHICmdList.CreateTexture(Desc);
 
             FUpdateTextureRegion2D Region(0, 0, 0, 0, AtlasWidth, AtlasHeight);
             uint32 Pitch = AtlasWidth * sizeof(float);
