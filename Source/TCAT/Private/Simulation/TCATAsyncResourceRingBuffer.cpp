@@ -94,21 +94,23 @@ uint32 FTCATAsyncResourceRingBuffer::GetLatestWriteReadLatencyFrames() const
     return LatestWriteReadLatencyFrames;
 }
 
-bool FTCATAsyncResourceRingBuffer::IsCopyComplete(const int32 Index) const
+ETCATSlotState FTCATAsyncResourceRingBuffer::GetSlotState(const int32 Index) const
 {
     const FTCATAsyncResource& AsyncResource = AsyncResources[Index];
-    return AsyncResource.CPUData.IsValid()
-        && AsyncResource.CPUData->CopiedGeneration.load(std::memory_order_acquire) == AsyncResource.WriteGeneration;
+    if (AsyncResource.WasMostRecentActionWrite())
+    {
+        // Writing -> Ready is decided by the render thread, which publishes the copied generation
+        const bool bCopied = AsyncResource.CPUData.IsValid()
+            && AsyncResource.CPUData->CopiedGeneration.load(std::memory_order_acquire) == AsyncResource.WriteGeneration;
+
+        return bCopied ? ETCATSlotState::Ready : ETCATSlotState::Writing;
+    }
+    return ETCATSlotState::Empty;
 }
 
-bool FTCATAsyncResourceRingBuffer::IsCurrentReadBackReady() const
+bool FTCATAsyncResourceRingBuffer::IsCurrentReadResourceReadable() const
 {
-    if (ValidCount == 0)
-    {
-        return false;
-    }
-
-	return AsyncResources[ReadIndex].WasMostRecentActionWrite() && IsCopyComplete(ReadIndex);
+	return IsReadable(ReadIndex);
 }
 
 bool FTCATAsyncResourceRingBuffer::IsReadable(const int32 Index) const
@@ -135,20 +137,24 @@ bool FTCATAsyncResourceRingBuffer::IsReadable(const int32 Index) const
         return false;
     }
 
-    if (!AsyncResources[Index].WasMostRecentActionWrite())
+    switch (GetSlotState(Index))
     {
+    case ETCATSlotState::Empty:
         UE_LOG(LogTCAT, VeryVerbose,
             TEXT("[%s] Read Resource(index: %d) is not resource that most recently called AdvanceWriteResource."), *DebugName.ToString(), Index);
         return false;
-    }
 
-    if (!IsCopyComplete(Index))
-    {
+    case ETCATSlotState::Writing:
         UE_LOG(LogTCAT, VeryVerbose, TEXT("[%s] Read Resource(index: %d)'s Readback not copied to CPU yet."), *DebugName.ToString(), Index);
         return false;
-    }
 
-    return true;
+    case ETCATSlotState::Ready:
+        return true;
+
+    default:
+		checkf(false, TEXT("[%s] Invalid slot state for index %d"), *DebugName.ToString(), Index);
+		return false;
+    }
 }
 
 int32 FTCATAsyncResourceRingBuffer::CalculatePhysicalIndex(const int32 LogicalIndex) const
@@ -200,7 +206,7 @@ bool FTCATAsyncResourceRingBuffer::AdvanceWriteResource(
     FTCATAsyncResource& WriteResource = AsyncResources[WriteIndex];
     WriteResource.WriteTime = OwnerObject->GetWorld()->GetTimeSeconds();
     WriteResource.ReadTime = MAX_dbl; // Not read yet
-	// New generation: copies of the slot's previous contents can no longer satisfy IsCopyComplete()
+	// New generation: copies of the slot's previous contents can no longer make this slot Ready
 	if (++WriteResource.WriteGeneration == 0)
 	{
 		WriteResource.WriteGeneration = 1;
@@ -242,7 +248,7 @@ void FTCATAsyncResourceRingBuffer::RequestReadbackCopies()
     for (int32 i = 0; i < BufferSize; ++i)
     {
         FTCATAsyncResource& Resource = AsyncResources[i];
-        if (!Resource.WasMostRecentActionWrite() || !Resource.Readback || !Resource.CPUData.IsValid() || IsCopyComplete(i))
+        if (GetSlotState(i) != ETCATSlotState::Writing || !Resource.Readback || !Resource.CPUData.IsValid())
         {
             continue;
         }

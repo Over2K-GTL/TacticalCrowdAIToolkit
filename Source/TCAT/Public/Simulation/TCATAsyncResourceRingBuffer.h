@@ -129,6 +129,25 @@ struct FTCATAsyncResource
 };
 
 /**
+ * Logical state of a ring buffer slot, as seen by the game thread.
+ * Derived from the slot's write/read bookkeeping and its write/copy generations (see GetSlotState()).
+ */
+enum class ETCATSlotState : uint8
+{
+	/** No unread write (initial state, or consumed and reset). */
+	Empty,
+
+	/**
+	 * Write reserved; the result is not in the CPU buffer yet.
+	 * Covers GPU compute, the readback copy, and the render-thread Lock/copy.
+	 */
+	Writing,
+
+	/** The CPU buffer holds this write's result; the game thread may read it. */
+	Ready,
+};
+
+/**
  * Lightweight debug info associated with each async slot.
  * Stored separately from FTCATAsyncResource so it can be updated without touching GPU objects.
  */
@@ -147,7 +166,7 @@ struct FTCATAsyncDebugResource
  *    to be decoupled across multiple buffered slots.
  *
  * Important behavior:
- *  - "Write" advances the write index and marks a slot as in-flight.
+ *  - "Write" advances the write index and moves a slot from Empty to Writing (see ETCATSlotState).
  *  - "Read" advances the read index only if the slot's readback has been copied to its CPU buffer
  *    on the render thread (see RequestReadbackCopies()). The game thread never locks a readback.
  *  - If the buffer is full, additional writes fail (caller should skip or throttle).
@@ -188,11 +207,11 @@ public:
 	 * @return True if the current logical read slot has been copied to its CPU buffer on the render thread,
 	 * i.e. the GPU finished and the data can be consumed on the game thread.
 	 */
-    bool IsCurrentReadBackReady() const;
+    bool IsCurrentReadResourceReadable() const;
 
 	/**
 	 * Get the current logical read slot without advancing indices.
-	 * This does NOT guarantee that the readback is ready; call IsCurrentReadBackReady() first if needed.
+	 * This does NOT guarantee that the readback is ready; call IsCurrentReadResourceReadable() first if needed.
 	 */
     const FTCATAsyncResource& GetCurrentReadResource() const;
 
@@ -261,8 +280,8 @@ public:
     }
 
 private:
-	/** Check whether the slot at a physical index has been copied to its CPU buffer for its latest write. */
-    bool IsCopyComplete(const int32 Index) const;
+	/** Get the logical state of the slot at a physical index. */
+    ETCATSlotState GetSlotState(const int32 Index) const;
 
 	/** Check whether the slot at a physical index is logically readable (valid + ready). */
 	bool IsReadable(const int32 Index) const;
