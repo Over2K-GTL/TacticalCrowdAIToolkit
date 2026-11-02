@@ -13,6 +13,7 @@
 	"SupportURL": "",
 	"EngineVersion": "5.8.0",
 	"CanContainContent": true,
+	"Installed": true,
 	"Modules": [
 		{
 			"Name": "TCAT",
