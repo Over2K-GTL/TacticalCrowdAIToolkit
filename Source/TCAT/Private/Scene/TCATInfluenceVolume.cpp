@@ -486,6 +486,7 @@ void ATCATInfluenceVolume::InitializeResources()
 	{
 		if (!AllRequiredTags.Contains(Key))
 		{
+			InfluenceLayers[Key].Release();
 			InfluenceLayers.Remove(Key);
 		}
 	}
