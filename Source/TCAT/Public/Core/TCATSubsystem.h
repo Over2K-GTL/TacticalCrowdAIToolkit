@@ -337,7 +337,8 @@ private:
 	FTCATInfluenceDispatchParams CreateDispatchParams(ATCATInfluenceVolume* Volume, FName LayerTag);
 	FTCATCompositeDispatchParams CreateCompositeDispatchParams(ATCATInfluenceVolume* Volume, const FTCATCompositeLayerConfig& CompositeLayer);
 	/**
-	 * Consumes completed GPU readbacks and writes results into each layer's CPU grid.
+	 * Requests render-thread copies of finished GPU readbacks, then consumes Ready slots
+	 * (copied on an earlier frame) into each layer's CPU grid.
 	 * Also performs post-correction when predicted positions drift beyond tolerance.
 	 */
 	void RetrieveGPUResults(ATCATInfluenceVolume* Volume);

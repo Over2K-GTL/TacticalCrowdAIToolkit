@@ -56,7 +56,7 @@ struct FTCATReadbackCPUData
  * Lifetime / ownership notes:
  *  - RenderTarget is a transient UObject owned by an Outer (typically a volume/subsystem).
  *  - Readback is an RHI object; it must be released correctly to avoid GPU memory leaks.
- *    It is deleted on the render thread so in-flight copy requests finish first.
+ *    It is deleted on the render thread so queued dispatches and copy requests that use it finish first.
  *  - Timestamps are used for latency/debug metrics and buffer state tracking.
  */
 USTRUCT()
@@ -78,7 +78,7 @@ struct FTCATAsyncResource
 	TSharedPtr<FTCATReadbackCPUData, ESPMode::ThreadSafe> CPUData;
 
 	/**
-	 * Incremented on every AdvanceWriteResource(). The slot is readable once CPUData->CopiedGeneration matches it.
+	 * Incremented on every AdvanceWriteResource(). The slot becomes Ready once CPUData->CopiedGeneration matches it.
 	 * Persistent per slot (survives Reset()). 0 is never used as a valid generation.
 	 */
 	uint32 WriteGeneration = 0;
@@ -90,7 +90,7 @@ struct FTCATAsyncResource
     double WriteTime = MAX_dbl;
 
 	/**
-	 * Timestamp (seconds) when this slot was read back / consumed on CPU.
+	 * Timestamp (seconds) when this slot was consumed on the game thread (AdvanceReadResource()).
 	 * Used to measure GPU pipeline latency and to detect slot usage state.
 	 */
     double ReadTime = MAX_dbl;
@@ -109,7 +109,7 @@ struct FTCATAsyncResource
 
 	/**
 	 * @return True if a write has occurred but the slot has not been read yet.
-	 * This indicates the slot is "in-flight" (awaiting readback/consumption).
+	 * The slot is then Writing or Ready (see ETCATSlotState); it is not Empty.
 	 */
     bool WasMostRecentActionWrite() const
     {
@@ -179,7 +179,7 @@ struct FTCATAsyncResourceRingBuffer
 {
     GENERATED_BODY()
 public:
-	/** Fixed number of slots in the ring buffer. Increasing this increases memory usage but can reduce stalls. */
+	/** Fixed number of slots in the ring buffer. Increasing this increases memory usage but reduces writes dropped while the buffer is full. */
     static constexpr int32 BufferSize = 5;
 
     FTCATAsyncResourceRingBuffer();
@@ -204,14 +204,14 @@ public:
 	uint32 GetLatestWriteReadLatencyFrames() const;
 
 	/**
-	 * @return True if the current logical read slot has been copied to its CPU buffer on the render thread,
-	 * i.e. the GPU finished and the data can be consumed on the game thread.
+	 * @return True if the current logical read slot is Ready (see ETCATSlotState), i.e. its readback has been
+	 * copied to its CPU buffer on the render thread and can be consumed on the game thread.
 	 */
     bool IsCurrentReadResourceReadable() const;
 
 	/**
 	 * Get the current logical read slot without advancing indices.
-	 * This does NOT guarantee that the readback is ready; call IsCurrentReadResourceReadable() first if needed.
+	 * This does NOT guarantee that the slot is Ready; call IsCurrentReadResourceReadable() first if needed.
 	 */
     const FTCATAsyncResource& GetCurrentReadResource() const;
 
@@ -232,8 +232,8 @@ public:
         , const TArray<FTCATInfluenceSourceWithOwner>* DispatchedSourcesWithOwners = nullptr);
 
 	/**
-	 * Game thread. Enqueue one render command that copies every in-flight slot whose GPU readback is ready
-	 * into that slot's CPU buffer. Slots that are not ready yet are re-requested on a later call.
+	 * Game thread. Enqueue one render command that copies every Writing slot whose GPU readback has finished
+	 * into that slot's CPU buffer, making it Ready. Slots the GPU has not finished yet are re-requested on a later call.
 	 * Call this every frame before AdvanceReadResource().
 	 */
 	void RequestReadbackCopies();
@@ -243,7 +243,7 @@ public:
 	 * OutCurrentReadResource.CPUData holds the copied data; consume it before the next RequestReadbackCopies().
      * @param OutCurrentReadResource Output read resource
      * @param bLogWriteReadLatency Log
-     * @return Success (false if buffer is empty or Readback not ready)
+     * @return Success (false if buffer is empty or the read slot is not Ready)
      */
     bool AdvanceReadResource(FTCATAsyncResource& OutCurrentReadResource, bool bLogWriteReadLatency = false);
 
@@ -271,7 +271,7 @@ public:
 	 * (e.g., composite volumes reading "previous frame" output) without affecting the pipeline state.
 	 *
 	 * Note:
-	 *  - This does not guarantee the slot is readable on CPU (readback may not be ready).
+	 *  - This does not guarantee the slot is readable on CPU (it may still be Writing).
 	 */
     const FTCATAsyncResource& PeekLastWriteResource() const
     {
@@ -283,7 +283,7 @@ private:
 	/** Get the logical state of the slot at a physical index. */
     ETCATSlotState GetSlotState(const int32 Index) const;
 
-	/** Check whether the slot at a physical index is logically readable (valid + ready). */
+	/** Check whether the slot at a physical index is logically readable (valid resources + Ready). */
 	bool IsReadable(const int32 Index) const;
 
 	/**
@@ -322,7 +322,7 @@ private:
 	/** Most recent successful write->read latency in frames (approximate). */
 	uint32 LatestWriteReadLatencyFrames;
 
-	/** Number of valid in-flight slots currently stored in the ring buffer. */
+	/** Number of slots holding an unconsumed write (Writing or Ready). */
     int32 ValidCount;
     
     /** Debug resources for AsyncResources */

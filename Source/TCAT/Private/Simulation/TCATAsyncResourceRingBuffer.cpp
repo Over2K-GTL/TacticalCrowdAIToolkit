@@ -329,7 +329,7 @@ bool FTCATAsyncResourceRingBuffer::AdvanceReadResource(FTCATAsyncResource& OutCu
             }
             break;
         }
-        else // The next next resource is also ready.
+        else // The next next resource is also readable.
         {
             if (bLogWriteReadLatency)
             {
@@ -492,7 +492,7 @@ void FTCATAsyncResourceRingBuffer::Release()
             Resource.Readback = nullptr;
         }
 
-        // In-flight copy requests hold their own reference to CPUData.
+        // Queued copy requests hold their own reference to CPUData.
         Resource.CPUData.Reset();
         Resource.Reset();
     }

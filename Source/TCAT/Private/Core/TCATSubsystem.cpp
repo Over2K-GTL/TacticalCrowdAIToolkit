@@ -23,7 +23,7 @@
 #include "VisualLogger/VisualLogger.h"
 
 DECLARE_CYCLE_STAT(TEXT("GPU_Readback_Retrieve"), STAT_TCAT_Readback_Retrieve, STATGROUP_TCAT);
-DECLARE_CYCLE_STAT(TEXT("GPU_Readback_LockCopy"), STAT_TCAT_Readback_LockCopy, STATGROUP_TCAT);
+DECLARE_CYCLE_STAT(TEXT("GPU_Readback_CopyToGrid"), STAT_TCAT_Readback_CopyToGrid, STATGROUP_TCAT);
 DECLARE_CYCLE_STAT(TEXT("GPU_Sync_Wait"), STAT_TCAT_GPU_Sync_Wait, STATGROUP_TCAT);
 
 DECLARE_DWORD_COUNTER_STAT(TEXT("Is_GPU_Update_Mode(1: GPU, 0: CPU)"), STAT_TCAT_Is_GPU_Update_Mode, STATGROUP_TCAT);
@@ -82,7 +82,7 @@ void UTCATSubsystem::Tick(float DeltaTime)
 	if (!GlobalCurveAtlasRHI.IsValid()) { return; }
 
 	// Frame Synchronization (Max Latency: 3 Frames)
-	// Force the CPU to wait if the GPU hasn't finished the frame from 3 ticks ago
+	// Force the game thread to wait if the render thread hasn't processed the commands from 3 ticks ago.
 	static FRenderCommandFence TCATFrameFences[3];
 	static uint32 FenceIndex = 0;
 	
@@ -790,7 +790,7 @@ FTCATInfluenceDispatchParams UTCATSubsystem::CreateDispatchParams(ATCATInfluence
     Params.GridSize = Volume->GetCellSize();
     Params.MapSize = FUintVector2(Volume->GetColumns(), Volume->GetRows());
 	
-    // Point to the specific layer's CPU grid for readback
+    // Point to the specific layer's CPU grid (output of the CPU dispatch path)
     Params.OutGridData = &LayerRes->Grid;
 
 	Params.bForceCPUSingleThread = Volume->bForceCPUSingleThreadUpdate;
@@ -896,7 +896,7 @@ void UTCATSubsystem::RetrieveGPUResults(ATCATInfluenceVolume* Volume)
         FTCATAsyncResource ReadResource;
         if (LayerRes.AsyncRingBuffer.AdvanceReadResource(ReadResource, Volume->bLogAsyncFrame))
         {
-			SCOPE_CYCLE_COUNTER(STAT_TCAT_Readback_LockCopy);
+			SCOPE_CYCLE_COUNTER(STAT_TCAT_Readback_CopyToGrid);
 
 			if (Volume->bLogAsyncFrame)
 			{

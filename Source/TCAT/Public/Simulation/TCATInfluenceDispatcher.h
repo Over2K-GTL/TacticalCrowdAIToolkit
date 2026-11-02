@@ -108,7 +108,7 @@ struct FTCATInfluenceDispatchParams
 	 * Optional async GPU readback object.
 	 * If non-null, the dispatcher enqueues a copy of the output texture into this readback.
 	 *
-	 * Lifetime: must remain valid until the owning ring-buffer or system consumes it.
+	 * Lifetime: owned by the ring buffer, which deletes it on the render thread after queued dispatches finish.
 	 */
 	class FRHIGPUTextureReadback* GPUReadback = nullptr;
 

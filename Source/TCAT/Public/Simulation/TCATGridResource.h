@@ -14,7 +14,7 @@ class UTextureRenderTarget2D;
  *
  * This struct stores a 2D grid of float values (row-major) along with basic metadata.
  * It can optionally own an asynchronous GPU pipeline (RenderTarget + Readback ring buffer)
- * to support GPU-written maps that are read back to CPU without stalling the render thread.
+ * to support GPU-written maps that are read back to CPU without the CPU waiting on the GPU.
  *
  * Data layout:
  *  - Grid is indexed as: Index = X + Y * Columns  (row-major)
@@ -24,7 +24,8 @@ class UTextureRenderTarget2D;
  * Notes for plugin users:
  *  - Grid values are "map-defined" floats (e.g., influence value, height value). Units depend on the producer.
  *  - MinMapValue / MaxMapValue are metadata fields; whether they are maintained depends on the producer code.
- *  - AsyncRingBuffer is for GPU pipeline parallelization; it does NOT automatically update Grid unless your system performs readback.
+ *  - AsyncRingBuffer is for GPU pipeline parallelization; it does NOT update Grid by itself.
+ *    UTCATSubsystem::RetrieveGPUResults() copies Ready slots into Grid.
  */
 USTRUCT(BlueprintType)
 struct FTCATGridResource
